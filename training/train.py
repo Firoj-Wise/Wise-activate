@@ -13,155 +13,259 @@ N_MFCC = 13
 N_FFT = 512 
 HOP_LENGTH = 160
 
-
-
 BASE_DIR = Path(__file__).resolve().parent.parent
 POSITIVE_DIR = BASE_DIR / "data" / "wake"
 NEGATIVE_DIR = BASE_DIR / "data" / "background"
+USER_NEGATIVE_DIR = BASE_DIR / "data" / "user_negatives"
 MODEL_SAVE_PATH = BASE_DIR / "training" / "wakeword_model.h5"
 TFLITE_SAVE_PATH = BASE_DIR / "web" / "wakeword_model.tflite"
 
-def normalize_audio(y, target_rms=0.1, threshold=0.005):
-    """
-    Normalizes the audio signal to a target RMS value, avoiding amplification of silence.
-    
-    This function implements a noise gate to ensure that only signal segments exceeding
-    a specific threshold are normalized, preventing background noise from becoming 
-    artificially loud. It also includes peak protection to prevent clipping.
+# Defined Classes
+CLASSES = ["Background", "Deepa", "Deepak"]
 
-    Args:
-        y (np.array): Input audio time series.
-        target_rms (float): Desired Root Mean Square amplitude.
-        threshold (float): RMS threshold below which normalization is skipped.
-
-    Returns:
-        np.array: Normalized audio signal.
+def normalize_audio(y):
     """
-    current_rms = np.sqrt(np.mean(y**2))
-    
-    # Noise Gate: Only normalize if signal > threshold to avoid amplifying background noise
-    if current_rms > threshold:
-        gain = target_rms / current_rms
-        y = y * gain
-        
-        # Peak protection: Hard clip to [-1.0, 1.0] range to avoid distortion
-        if np.max(np.abs(y)) > 1.0:
-            y = y / np.max(np.abs(y))
-            
+    Normalizes audio to Peak 1.0.
+    """
+    peak = np.max(np.abs(y))
+    if peak > 0:
+        y = y / (peak + 1e-6)
     return y
+
+def augment_audio(y, background_files=[]):
+    """
+    Applies random augmentations: Pitch, Speed, Noise, and Background Mixing.
+    """
+    options = ["pitch", "speed", "noise", "reverb", "mix", "none"]
+    weights = [0.15, 0.15, 0.15, 0.2, 0.25, 0.1] # Added Reverb
+    
+    aug_type = np.random.choice(options, p=weights)
+    
+    if aug_type == "pitch":
+        n_steps = np.random.uniform(-2, 2)
+        y = librosa.effects.pitch_shift(y, sr=SAMPLE_RATE, n_steps=n_steps)
+    elif aug_type == "speed":
+        rate = np.random.uniform(0.85, 1.15)
+        y = librosa.effects.time_stretch(y, rate=rate)
+    elif aug_type == "noise":
+        noise_amp = 0.005 * np.random.uniform() * np.amax(y)
+        y = y + noise_amp * np.random.normal(size=y.shape)
+    elif aug_type == "reverb":
+        y = add_reverb(y)
+    elif aug_type == "mix" and len(background_files) > 0:
+        # Load a random background file
+        bg_file = np.random.choice(background_files)
+        try:
+            bg, _ = librosa.load(bg_file, sr=SAMPLE_RATE)
+            bg = librosa.util.fix_length(bg, size=len(y))
+            
+            # Adjust volume of background (SNR between 5dB and 15dB)
+            bg_vol = np.random.uniform(0.1, 0.4) 
+            y = y + (bg * bg_vol)
+        except:
+            pass # Fail silently and return original if load fails
+        
+    if len(y) > SAMPLES:
+        y = y[:SAMPLES]
+    else:
+        y = librosa.util.fix_length(y, size=SAMPLES)
+        
+    y = normalize_audio(y)
+    return y
+
+def add_reverb(y):
+    """
+    Simulates Room Impulse Response (RIR) using exponential decay noise.
+    The 'Secret Sauce' for Sim-to-Real gap.
+    """
+    # 1. Generate impulse response
+    # Random length (0.2s to 0.5s)
+    rir_len = int(SAMPLE_RATE * np.random.uniform(0.1, 0.3))
+    t = np.linspace(0, 1, rir_len)
+    # Exponential decay
+    decay = np.exp(-t * np.random.uniform(5, 15)) 
+    # White noise * decay
+    rir = np.random.normal(0, 1, rir_len) * decay
+    rir = rir / np.max(np.abs(rir)) # Normalize RIR
+    
+    # 2. Convolve
+    # Scipy convolve is slow, let's use FFT based or simple mix?
+    # For speed in training loop, we might want to just mix a delayed version?
+    # Simple "Echo":
+    delay = int(SAMPLE_RATE * np.random.uniform(0.01, 0.05))
+    decay_factor = np.random.uniform(0.1, 0.4)
+    
+    if len(y) > delay:
+        echo = np.roll(y, delay)
+        echo[:delay] = 0
+        y = y + echo * decay_factor
+        
+    return normalize_audio(y)
+
+def apply_spec_augment(mfcc):
+    """
+    Zeros out blocks of time or frequency. 
+    Forces model to rely on context.
+    Input: (Time, MFCC_Feats) -> (101, 13)
+    """
+    # Time Masking
+    if np.random.rand() < 0.5:
+        t_mask = np.random.randint(5, 15)
+        t_start = np.random.randint(0, mfcc.shape[0] - t_mask)
+        mfcc[t_start:t_start+t_mask, :] = 0
+        
+    # Freq Masking
+    if np.random.rand() < 0.5:
+        f_mask = np.random.randint(1, 4)
+        f_start = np.random.randint(0, mfcc.shape[1] - f_mask)
+        mfcc[:, f_start:f_start+f_mask] = 0
+        
+    return mfcc
 
 def load_audio(file_path):
     try:
         y, sr = librosa.load(file_path, sr=SAMPLE_RATE)
-        y = librosa.util.fix_length(y, size=SAMPLES)
-        # Normalization removed to rely on raw data diversity
-        return y
+        
+        # 1. Trim Silence using dB threshold
+        # This removes leading/trailing silence so we focus on the speech
+        y_trimmed, _ = librosa.effects.trim(y, top_db=20)
+        
+        if len(y_trimmed) == 0:
+            return None
+            
+        # 2. Center Audio in the 1 second window
+        if len(y_trimmed) > SAMPLES:
+            # If too long, take the center
+            start = (len(y_trimmed) - SAMPLES) // 2
+            y_final = y_trimmed[start:start+SAMPLES]
+        else:
+            # If too short, pad symmetrically
+            padding = SAMPLES - len(y_trimmed)
+            offset = padding // 2
+            y_final = np.pad(y_trimmed, (offset, padding - offset), 'constant')
+            
+        # 3. Normalize (Crucial for User vs TTS balance)
+        y_final = normalize_audio(y_final)
+        
+        return y_final
     except Exception as e:
         print(f"Error loading {file_path}: {e}")
         return None
 
-
-
 def extract_mfcc(y):
     """
-    Extracts Mel Frequency Cepstral Coefficients (MFCCs) from the audio signal.
-
-    This configuration is strictly calibrated to match the client-side feature extraction
-    performed by Meyda in the web application. Deviating from these parameters will
-    result in model inference mismatch.
-
-    Parameters:
-        - Sample Rate: 16000 Hz
-        - n_mfcc: 13 features
-        - n_fft: 512 samples
-        - hop_length: 160 samples
-        - n_mels: 40 (Critical for Meyda.js compatibility)
-
-    Args:
-        y (np.array): Audio time series.
-
-    Returns:
-        np.array: Transposed MFCC matrix (Time, N_MFCC).
+    Extracts MFCCs matching the client-side Meyda configuration.
     """
-    # CRITICAL: n_mels is set to 40 explicitly to align with Meyda's default mel-filterbank construction.
-    # While librosa defaults to 128, Meyda uses 40. This parameter is non-negotiable for cross-platform accuracy.
     mfcc = librosa.feature.mfcc(y=y, sr=SAMPLE_RATE, n_mfcc=N_MFCC, n_fft=N_FFT, hop_length=HOP_LENGTH, n_mels=40)
     return mfcc.T
 
-def load_dataset(balance_ratio=1.0):
+def load_dataset():
     X, y = [], []
     
-    print("Loading positive samples...")
-    pos_files = list(POSITIVE_DIR.rglob("*.wav"))
+    classes = ["Background", "Deepa", "Deepak"]
+    class_indices = {"deepa": 1, "deepak": 2}
+    num_classes = 3
+
+    # Pre-load background file list for mixing
+    print("Indexing background files for mixing...")
+    bg_files = list(NEGATIVE_DIR.rglob("*.wav"))
     
-    for file in pos_files:
-        # Load original samples
+    print("Loading positive samples...")
+    # Load from language folders
+    for lang_code, idx in class_indices.items():
+        lang_dir = POSITIVE_DIR / lang_code
+        if not lang_dir.exists():
+            print(f"Warning: Directory {lang_dir} does not exist. Skipping.")
+            continue
+            
+        files = list(lang_dir.rglob("*.wav"))
+        print(f"Loading {len(files)} samples for {classes[idx]} ({lang_code})...")
+        
+        for file in files:
+            audio = load_audio(file)
+            if audio is not None:
+                # Original
+                X.append(extract_mfcc(audio))
+                y.append(idx)
+                # SUPER HEAVY AUGMENTATION (50x)
+                # We want these real-world samples to be a significant chunk of the dataset
+                # CRITICAL CHANGE: Do NOT add background noise to user samples. They already have it!
+                # Only augment Pitch/Speed.
+                for _ in range(50):
+                    aug_audio = augment_audio(audio, background_files=[]) 
+                    mfcc = extract_mfcc(aug_audio)
+                    mfcc = apply_spec_augment(mfcc) # SpecAugment for Positives
+                    X.append(mfcc)
+                    y.append(idx)
+
+    print("Loading USER NEGATIVES (Hard Negatives)...")
+    user_neg_files = list(USER_NEGATIVE_DIR.rglob("*.wav"))
+    print(f"Found {len(user_neg_files)} user negative samples.")
+    
+    for file in user_neg_files:
         audio = load_audio(file)
         if audio is not None:
-            features = extract_mfcc(audio)
-            X.append(features)
-            y.append(1)
-            
-    num_pos = len(X)
-    print(f"Loaded {num_pos} positive samples.")
-    
-    print("Loading negative samples...")
+             # Original
+             X.append(extract_mfcc(audio))
+             y.append(0) # Class 0
+             
+             # HEAVY Augmentation (50x) - NO BACKGROUND MIXING
+             # Treat same as user positives to teach "Voice != Trigger"
+             for _ in range(50):
+                 aug_audio = augment_audio(audio, background_files=[]) 
+                 mfcc = extract_mfcc(aug_audio)
+                 mfcc = apply_spec_augment(mfcc) # THE SECRET SAUCE #2
+                 X.append(mfcc)
+                 y.append(0)
+
+    print("Loading negative samples and applying HEAVY augmentation...")
+    # Background / Negatives are Class 0
     neg_files = list(NEGATIVE_DIR.rglob("*.wav"))
-    
-    # Use ALL negative samples (No balancing/limiting)
-    np.random.shuffle(neg_files)
-    print(f"Using ALL {len(neg_files)} negative samples for robust training.")
+    print(f"Found {len(neg_files)} base negative samples.")
     
     for file in neg_files:
         audio = load_audio(file)
         if audio is not None:
-            features = extract_mfcc(audio)
-            X.append(features)
+             # Original
+            X.append(extract_mfcc(audio))
             y.append(0)
+            
+            # HEAVY Augmentation for Negatives (10x) to balance dataset
+            # Positives: ~2800 * 4 = ~11,200
+            # Negatives needs to be similar. ~1200 * 10 = ~12,000
+            for _ in range(10):
+                aug_audio = augment_audio(audio, background_files=bg_files)
+                mfcc = extract_mfcc(aug_audio)
+                mfcc = apply_spec_augment(mfcc) # SpecAugment for Negatives
+                X.append(mfcc)
+                y.append(0)
 
-    print(f"Loaded {len(y) - num_pos} negative samples.")
-    
-    return np.array(X), np.array(y)
+    print(f"Final Dataset Size: {len(X)}")
+    return np.array(X), np.array(y), num_classes
 
-def build_model(input_shape):
+def build_model(input_shape, num_classes):
     """
-    Constructs a Fully Convolutional Neural Network (FCN) optimized for keyword spotting.
-
-    Architecture Overview:
-    1. Input Layer: Receives MFCC spectrograms.
-    2. Convolutional Block 1: 32 filters, 3x3 kernel. Captures low-level spectral-temporal features.
-    3. Max Pooling: Reduces dimensionality and adds translational invariance.
-    4. Convolutional Block 2: 64 filters, 3x3 kernel. Captures higher-level distinct phonetic patterns.
-    5. 'Dense' Convolution: 64 filters, 1x1 kernel. Acts as a fully connected layer but preserves spatial properties.
-    6. Output Convolution: 2 filters (Wake Word vs. Background).
-    7. Global Average Pooling: Aggregates features over the entire time dimension, enabling variable-length input support.
-    8. Softmax: Probabilistic output.
-
-    Args:
-        input_shape (tuple): Shape of the input spectrogram (Time_Steps, N_MFCC).
-        
-    Returns:
-        tf.keras.Model: compiled Keras model.
+    Constructs FCN.
     """
     model = tf.keras.Sequential([
         tf.keras.layers.Input(shape=input_shape),
         
-        # Block 1: Feature Extraction
+        # Block 1
         tf.keras.layers.Conv2D(32, (3, 3), activation='relu', padding='same', name='conv_1'),
         tf.keras.layers.MaxPool2D((2, 2), name='pool_1'),
         
-        # Block 2: Pattern Recognition
+        # Block 2
         tf.keras.layers.Conv2D(64, (3, 3), activation='relu', padding='same', name='conv_2'),
         tf.keras.layers.MaxPool2D((2, 2), name='pool_2'),
 
-        # Block 3: Dimensionality Reduction & Interpretation (1x1 Conv replaces Dense)
+        # Block 3
         tf.keras.layers.Conv2D(64, (1, 1), activation='relu', name='dense_conv'),
         tf.keras.layers.Dropout(0.5, name='dropout'),
         
         # Block 4: Class Projection
-        tf.keras.layers.Conv2D(2, (1, 1), activation='linear', name='output_conv'),
+        tf.keras.layers.Conv2D(num_classes, (1, 1), activation='linear', name='output_conv'),
         
-        # Aggregation: Reduces (Time, Freq, Channels) -> (Channels) basically (Batch, 2)
+        # Aggregation
         tf.keras.layers.GlobalAveragePooling2D(name='global_avg_pool'),
         
         # Activation
@@ -174,30 +278,73 @@ def build_model(input_shape):
     return model
 
 def main():
-    print("--- Starting Training Pipeline ---")
+    print("--- Starting Adaptive Training Pipeline ---")
     
-    X, y = load_dataset()
+    X, y, num_classes = load_dataset()
     print(f"Dataset Info: X shape={X.shape}, y shape={y.shape}")
+    print(f"Number of Classes: {num_classes}")
     
-    # Expand dims to add channel information (N, Time, MFCC, 1)
+    # SHUFFLE DATA (Crucial for correct Validation Split)
+    # Without this, val_split takes the last 20% (which is all Background), leading to 0% accuracy.
+    print("Shuffling dataset...")
+    indices = np.arange(len(X))
+    np.random.shuffle(indices)
+    X = X[indices]
+    y = y[indices]
+
     X = X[..., np.newaxis]
-    
     input_shape = X.shape[1:]
-    model = build_model(input_shape)
+    
+    model = build_model(input_shape, num_classes)
     model.summary()
     
-    # Compute Class Weights to handle imbalance (Positives >> Negatives)
-    # This ensures the model treats both classes equally rather than "guessing" the majority class.
     class_weights = class_weight.compute_class_weight('balanced', classes=np.unique(y), y=y)
     class_weight_dict = dict(enumerate(class_weights))
+    
+    # Boost Background Class (0) to reduce false positives
+    # REMOVED: 10x boost was causing the model to ignore User Samples (Messy Audio -> Background)
+    # if 0 in class_weight_dict:
+    #     class_weight_dict[0] *= 10.0
+    #     print(f"Boosted Background Weight: {class_weight_dict[0]}")
+
     print(f"Computed Class Weights: {class_weight_dict}")
 
     print("Training model...")
-    # Increased epochs to 50
-    model.fit(X, y, epochs=50, batch_size=32, validation_split=0.2, verbose=1, class_weight=class_weight_dict)
+    history = model.fit(X, y, epochs=50, batch_size=32, validation_split=0.2, verbose=1, class_weight=class_weight_dict)
     
     print(f"Saving model to {MODEL_SAVE_PATH}...")
     model.save(MODEL_SAVE_PATH)
+
+    # Plotting Training History
+    try:
+        import matplotlib.pyplot as plt
+        print("Generating training graph...")
+        plt.figure(figsize=(12, 4))
+        
+        # Accuracy
+        plt.subplot(1, 2, 1)
+        plt.plot(history.history['accuracy'], label='Train Accuracy')
+        plt.plot(history.history['val_accuracy'], label='Val Accuracy')
+        plt.title('Model Accuracy')
+        plt.ylabel('Accuracy')
+        plt.xlabel('Epoch')
+        plt.legend(loc='lower right')
+        
+        # Loss
+        plt.subplot(1, 2, 2)
+        plt.plot(history.history['loss'], label='Train Loss')
+        plt.plot(history.history['val_loss'], label='Val Loss')
+        plt.title('Model Loss')
+        plt.ylabel('Loss')
+        plt.xlabel('Epoch')
+        plt.legend(loc='upper right')
+        
+        graph_path = BASE_DIR / "training" / "training_history.png"
+        plt.tight_layout()
+        plt.savefig(graph_path)
+        print(f"Saved training graph to {graph_path}")
+    except Exception as e:
+        print(f"Could not generate graph: {e}")
     
     print("Converting to TFLite...")
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
@@ -213,3 +360,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -3,7 +3,7 @@ const SAMPLE_RATE = 16000;
 const N_FFT = 512;
 const HOP_LENGTH = 160;
 const N_MFCC = 13;
-const THRESHOLD = 0.90; // Lowered to 90%
+const THRESHOLD = 0.85; // Updated to match Python script
 
 // Core Audio Processing & Inference Variables
 let model = null;          // TFLite model instance
@@ -19,6 +19,7 @@ const stopBtn = document.getElementById("stopBtn");
 const indicator = document.getElementById("indicator");
 const scoreFill = document.getElementById("scoreFill");
 const confidenceDisplay = document.getElementById("confidenceDisplay");
+const languageDisplay = document.getElementById("languageDisplay");
 
 async function loadModel() {
     statusDiv.innerText = "Loading Model...";
@@ -62,7 +63,27 @@ function preprocessAudio(signal) {
 async function runInference(audioData) {
     if (!model) return;
 
-    const mfccs = preprocessAudio(audioData);
+    // --- 1. Peak Calculation & Normalization ---
+    // Calculate Peak
+    let peak = 0;
+    for (let i = 0; i < audioData.length; i++) {
+        const abs = Math.abs(audioData[i]);
+        if (abs > peak) peak = abs;
+    }
+
+    // NormalizeLogic
+    let normData = new Float32Array(audioData); // Copy
+    const SILENCE_THRESHOLD = 0.02;
+
+    if (peak > SILENCE_THRESHOLD) {
+        // Boost to Peak 1.0 (Simulates Training Data)
+        for (let i = 0; i < normData.length; i++) {
+            normData[i] = normData[i] / (peak + 1e-6);
+        }
+    }
+    // If < 0.02, we leave it as quiet room tone (Model should predict Background)
+
+    const mfccs = preprocessAudio(normData);
     if (mfccs.length === 0) return;
 
     // Strict Input Formatting for TFLite
@@ -79,7 +100,50 @@ async function runInference(audioData) {
     try {
         const output = model.predict(tensor);
         const prediction = output.dataSync();
-        const score = prediction[1];
+
+        let score = 0;
+        let detected = false;
+        let labelText = "Wake Word Detected!";
+
+        // Adaptive Inference Logic
+        if (prediction.length === 2) {
+            // BINARY MODE (0: Background, 1: Wake Word)
+            score = prediction[1];
+            if (score > THRESHOLD) detected = true;
+
+        } else if (prediction.length > 2) {
+            // MULTICLASS MODE (0: Background, 1: EN, 2: MAI, 3: NE)
+            let maxScore = -1;
+            let maxIndex = -1;
+
+            for (let i = 0; i < prediction.length; i++) {
+                if (prediction[i] > maxScore) {
+                    maxScore = prediction[i];
+                    maxIndex = i;
+                }
+            }
+
+            score = maxScore;
+
+            // Index 0 is Background
+            if (maxIndex > 0 && maxScore > THRESHOLD) {
+                detected = true;
+                const languages = ["Background", "Deepa", "Deepak"];
+                // Safety check for index
+                const lang = languages[maxIndex] || "Unknown";
+                labelText = `Wake Word (${lang}) Detected!`;
+            } else if (maxIndex === 0) {
+                // If background is max, we show the confidence of "Background" or just suppress?
+                // Usually for viz we want to show "how close are we to a wake word". 
+                // In multiclass, it's harder to show a single "progress bar" to wake word.
+                // We can show the max of the non-background classes.
+                let maxWakeScore = 0;
+                for (let i = 1; i < prediction.length; i++) {
+                    if (prediction[i] > maxWakeScore) maxWakeScore = prediction[i];
+                }
+                score = maxWakeScore; // Show the highest confidence wake word candidate
+            }
+        }
 
         // Update UI Visuals
         const percentage = (score * 100).toFixed(1);
@@ -95,13 +159,24 @@ async function runInference(audioData) {
             scoreFill.style.backgroundColor = "#007AFF"; // Blue
         }
 
-        if (score > THRESHOLD) {
-            triggerWakeWord();
+        if (detected) {
+            triggerWakeWord(labelText);
+            // languageDisplay is handled in triggerWakeWord or here? 
+            // Let's do it here for specificity if we have the lang
+            // Actually, labelText already has it. 
+            // But user asked to "show me that in UI as well".
+            // Let's parse it or pass it.
+            // Simplest: just update the element.
+            const langMatch = labelText.match(/\((.*?)\)/);
+            if (langMatch) {
+                languageDisplay.innerText = `Language: ${langMatch[1]}`;
+            }
         } else {
             // Only update text if we are not currently showing "Detected!"
             if (!indicator.classList.contains("detected")) {
                 statusDiv.innerText = "Listening...";
                 statusDiv.className = "status-text";
+                languageDisplay.innerText = "";
             }
         }
     } catch (e) {
@@ -110,8 +185,8 @@ async function runInference(audioData) {
     tensor.dispose();
 }
 
-function triggerWakeWord() {
-    statusDiv.innerText = "Wake Word Detected!";
+function triggerWakeWord(text = "Wake Word Detected!") {
+    statusDiv.innerText = text;
     statusDiv.className = "status-text heavy";
     indicator.classList.add("detected");
     indicator.classList.remove("listening");

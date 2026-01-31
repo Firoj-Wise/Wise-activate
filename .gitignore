@@ -46,6 +46,18 @@ Thumbs.db
 # We are choosing NOT to ignore data/ because it is <50MB.
 # data/
 
-# Models (Optional: Ignore if you want users to generate their own)
-# training/wakeword_model.h5
-# web/wakeword_model.tflite
+# Models & Artifacts
+*.h5
+*.tflite
+*.zip
+dataset.zip
+training/wakeword_model.h5
+web/wakeword_model.tflite
+
+# Virtual Env
+.venv
+env/
+venv/
+data/
+gcp_key.json
+gcp_key.json
