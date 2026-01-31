@@ -159,27 +159,44 @@ def extract_mfcc(y):
     mfcc = librosa.feature.mfcc(y=y, sr=SAMPLE_RATE, n_mfcc=N_MFCC, n_fft=N_FFT, hop_length=HOP_LENGTH, n_mels=40)
     return mfcc.T
 
+# Defined Classes (Granular)
+CLASSES = [
+    "Background", 
+    "Deepa (EN)", "Deepa (NE)", "Deepa (MAI)",
+    "Deepak (EN)", "Deepak (NE)", "Deepak (MAI)"
+]
+
 def load_dataset():
     X, y = [], []
+    num_classes = len(CLASSES)
     
-    classes = ["Background", "Deepa", "Deepak"]
-    class_indices = {"deepa": 1, "deepak": 2}
-    num_classes = 3
+    # Mapping: (Folder, LangSubfolder) -> Class Index
+    # 0 is Background
+    label_map = {
+        ("deepa", "en"): 1,
+        ("deepa", "ne"): 2,
+        ("deepa", "mai"): 3,
+        ("deepak", "en"): 4,
+        ("deepak", "ne"): 5,
+        ("deepak", "mai"): 6
+    }
 
-    # Pre-load background file list for mixing
+    # Pre-load background file list (for mixing)
     print("Indexing background files for mixing...")
     bg_files = list(NEGATIVE_DIR.rglob("*.wav"))
     
-    print("Loading positive samples...")
-    # Load from language folders
-    for lang_code, idx in class_indices.items():
-        lang_dir = POSITIVE_DIR / lang_code
-        if not lang_dir.exists():
-            print(f"Warning: Directory {lang_dir} does not exist. Skipping.")
+    print("Loading positive samples (Gender + Language)...")
+    
+    # Iterate through our defined map
+    for (name_dir, lang_dir), idx in label_map.items():
+        target_path = POSITIVE_DIR / name_dir / lang_dir
+        
+        if not target_path.exists():
+            print(f"Warning: Path {target_path} not found. Skipping Class {idx}.")
             continue
             
-        files = list(lang_dir.rglob("*.wav"))
-        print(f"Loading {len(files)} samples for {classes[idx]} ({lang_code})...")
+        files = list(target_path.glob("*.wav"))
+        print(f"Loading {len(files)} samples for Class {idx}: {CLASSES[idx]}...")
         
         for file in files:
             audio = load_audio(file)
@@ -187,14 +204,13 @@ def load_dataset():
                 # Original
                 X.append(extract_mfcc(audio))
                 y.append(idx)
-                # SUPER HEAVY AUGMENTATION (50x)
-                # We want these real-world samples to be a significant chunk of the dataset
-                # CRITICAL CHANGE: Do NOT add background noise to user samples. They already have it!
-                # Only augment Pitch/Speed.
+                
+                # HEAVY AUGMENTATION (50x)
+                # Keep original heavy augmentation strategy
                 for _ in range(50):
-                    aug_audio = augment_audio(audio, background_files=[]) 
+                    aug_audio = augment_audio(audio, background_files=[])
                     mfcc = extract_mfcc(aug_audio)
-                    mfcc = apply_spec_augment(mfcc) # SpecAugment for Positives
+                    mfcc = apply_spec_augment(mfcc)
                     X.append(mfcc)
                     y.append(idx)
 

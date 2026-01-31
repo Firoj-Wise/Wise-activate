@@ -63,7 +63,27 @@ sys.path.append(".")
 !python training/train.py
 
 # note: At the end of training, you will now see a "Confusion Matrix".
-# Check that the "Deepa" vs "Deepak" intersection is low!
+# Check that the "Deepa" vs "Deepak" intersection (false positives) is low!
+
+
+### 5. Verify Performance
+**CRITICAL STEP:**
+Look at the **Confusion Matrix** output at the end of training.
+It will now show **7 Classes**:
+1.  Background
+2.  Deepa (EN)
+3.  Deepa (NE)
+4.  Deepa (MAI)
+5.  Deepak (EN)
+6.  Deepak (NE)
+7.  Deepak (MAI)
+
+**Success Criteria:**
+*   **Diagonal Line:** You should see high numbers (dark squares) on the diagonal.
+*   **Language separation:** "Deepa (EN)" should NOT be confused with "Deepa (NE)".
+*   **Background:** The model should rarely mistake Background for any Wake Word (thanks to the massive negative dataset).
+
+> **Note:** Ensure you uploaded the **UPDATED `train.py`** which contains the new 7-class logic!
 
 ```
 *Wait ~10-15 minutes. You will see Epoch accuracy climbing.*

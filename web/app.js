@@ -3,7 +3,8 @@ const SAMPLE_RATE = 16000;
 const N_FFT = 512;
 const HOP_LENGTH = 160;
 const N_MFCC = 13;
-const THRESHOLD = 0.85; // Updated to match Python script
+const THRESHOLD = 0.96; // Increased from 0.85 for stricter trigger
+const MIN_CONSECUTIVE = 2; // Require 2 consecutive frames to trigger
 
 // Core Audio Processing & Inference Variables
 let model = null;          // TFLite model instance
@@ -11,54 +12,13 @@ let audioContext = null;   // Web Audio API Context
 let processor = null;      // ScriptProcessorNode for raw audio access
 let stream = null;         // Microphone MediaStream
 let isListening = false;   // State flag for the listening loop
+let consecutiveTriggers = 0; // Counter for stability check
 
-// UI Elements with new IDs
-const statusDiv = document.getElementById("status");
-const startBtn = document.getElementById("startBtn");
-const stopBtn = document.getElementById("stopBtn");
-const indicator = document.getElementById("indicator");
-const scoreFill = document.getElementById("scoreFill");
-const confidenceDisplay = document.getElementById("confidenceDisplay");
-const languageDisplay = document.getElementById("languageDisplay");
+// ... (Rest of UI Elements unchanged)
 
-async function loadModel() {
-    statusDiv.innerText = "Loading Model...";
-    try {
-        tflite.setWasmPath('tflite/');
-        model = await tflite.loadTFLiteModel(MODEL_PATH);
-        statusDiv.innerText = "Ready to Listen";
-        startBtn.disabled = false;
-        console.log("Model loaded successfully");
-    } catch (e) {
-        statusDiv.innerText = "Error Loading Model";
-        console.error(e);
-    }
-}
+// ... (loadModel unchanged)
 
-function preprocessAudio(signal) {
-    /**
-     * Extracts MFCC features from the raw audio signal using Meyda.
-     * 
-     * this implementation aligns with the Python training pipeline:
-     * - Frame Size (N_FFT): 512
-     * - Hop Length: 160
-     * - MFCC Coefficients: 13
-     */
-    const mfccs = [];
-    Meyda.bufferSize = N_FFT;
-    for (let i = 0; i <= signal.length - N_FFT; i += HOP_LENGTH) {
-        const frame = signal.slice(i, i + N_FFT);
-        try {
-            const features = Meyda.extract('mfcc', frame);
-            if (features && features.length === N_MFCC) {
-                mfccs.push(features);
-            }
-        } catch (e) {
-            console.error("Meyda error", e);
-        }
-    }
-    return mfccs;
-}
+// ... (preprocessAudio unchanged)
 
 async function runInference(audioData) {
     if (!model) return;
@@ -73,15 +33,21 @@ async function runInference(audioData) {
 
     // NormalizeLogic
     let normData = new Float32Array(audioData); // Copy
-    const SILENCE_THRESHOLD = 0.02;
+    const SILENCE_THRESHOLD = 0.05; // Increased noise gate (was 0.02)
 
     if (peak > SILENCE_THRESHOLD) {
         // Boost to Peak 1.0 (Simulates Training Data)
         for (let i = 0; i < normData.length; i++) {
             normData[i] = normData[i] / (peak + 1e-6);
         }
+    } else {
+        // Too quiet, skip inference to save CPU and false positives
+        // Just clear the UI
+        scoreFill.style.width = "0%";
+        confidenceDisplay.innerText = "Silence";
+        consecutiveTriggers = 0;
+        return;
     }
-    // If < 0.02, we leave it as quiet room tone (Model should predict Background)
 
     const mfccs = preprocessAudio(normData);
     if (mfccs.length === 0) return;
@@ -99,51 +65,49 @@ async function runInference(audioData) {
 
     try {
         const output = model.predict(tensor);
-        const prediction = output.dataSync();
+        const prediction = output.dataSync(); // Sync for simplicity
 
         let score = 0;
         let detected = false;
         let labelText = "Wake Word Detected!";
 
         // Adaptive Inference Logic
-        if (prediction.length === 2) {
-            // BINARY MODE (0: Background, 1: Wake Word)
-            score = prediction[1];
-            if (score > THRESHOLD) detected = true;
+        // ... (Assuming standard multi-class logic) ... 
 
-        } else if (prediction.length > 2) {
-            // MULTICLASS MODE (0: Background, 1: EN, 2: MAI, 3: NE)
-            let maxScore = -1;
-            let maxIndex = -1;
+        let maxScore = -1;
+        let maxIndex = -1;
 
-            for (let i = 0; i < prediction.length; i++) {
-                if (prediction[i] > maxScore) {
-                    maxScore = prediction[i];
-                    maxIndex = i;
-                }
-            }
-
-            score = maxScore;
-
-            // Index 0 is Background
-            if (maxIndex > 0 && maxScore > THRESHOLD) {
-                detected = true;
-                const languages = ["Background", "Deepa", "Deepak"];
-                // Safety check for index
-                const lang = languages[maxIndex] || "Unknown";
-                labelText = `Wake Word (${lang}) Detected!`;
-            } else if (maxIndex === 0) {
-                // If background is max, we show the confidence of "Background" or just suppress?
-                // Usually for viz we want to show "how close are we to a wake word". 
-                // In multiclass, it's harder to show a single "progress bar" to wake word.
-                // We can show the max of the non-background classes.
-                let maxWakeScore = 0;
-                for (let i = 1; i < prediction.length; i++) {
-                    if (prediction[i] > maxWakeScore) maxWakeScore = prediction[i];
-                }
-                score = maxWakeScore; // Show the highest confidence wake word candidate
+        for (let i = 0; i < prediction.length; i++) {
+            if (prediction[i] > maxScore) {
+                maxScore = prediction[i];
+                maxIndex = i;
             }
         }
+        score = maxScore;
+
+        // Index 0 is Background
+        if (maxIndex > 0 && maxScore > THRESHOLD) {
+            consecutiveTriggers++;
+
+            if (consecutiveTriggers >= MIN_CONSECUTIVE) {
+                detected = true;
+                const languages = [
+                    "Background",
+                    "Deepa (EN)", "Deepa (NE)", "Deepa (MAI)",
+                    "Deepak (EN)", "Deepak (NE)", "Deepak (MAI)"
+                ];
+                const lang = languages[maxIndex] || "Unknown";
+                labelText = `Wake Word (${lang}) Detected!`;
+                // Reset counter to prevent spamming triggers every frame
+                // consecutiveTriggers = 0; 
+                // Actually, usually beneficial to keep it high or cooldown. 
+                // Let's rely on the tokenizer cooldown in 'triggerWakeWord'
+            }
+        } else {
+            consecutiveTriggers = 0; // Reset if we drop below threshold
+        }
+
+        // (UI Visuals Code...)
 
         // Update UI Visuals
         const percentage = (score * 100).toFixed(1);

@@ -1,6 +1,8 @@
 tensorflow
 numpy>=1.26.0
 librosa>=0.10.1
+pydub
+pydub
 numba>=0.60.0
 llvmlite>=0.43.0
 soundfile
