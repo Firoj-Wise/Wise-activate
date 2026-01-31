@@ -61,6 +61,10 @@ sys.path.append(".")
 
 # Run Training
 !python training/train.py
+
+# note: At the end of training, you will now see a "Confusion Matrix".
+# Check that the "Deepa" vs "Deepak" intersection is low!
+
 ```
 *Wait ~10-15 minutes. You will see Epoch accuracy climbing.*
 

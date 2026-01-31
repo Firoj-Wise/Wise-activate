@@ -250,22 +250,30 @@ def build_model(input_shape, num_classes):
     model = tf.keras.Sequential([
         tf.keras.layers.Input(shape=input_shape),
         
-        # Block 1
+        # Block 1: Capture broad features
         tf.keras.layers.Conv2D(32, (3, 3), activation='relu', padding='same', name='conv_1'),
-        tf.keras.layers.MaxPool2D((2, 2), name='pool_1'),
+        tf.keras.layers.BatchNormalization(),
+        tf.keras.layers.MaxPool2D((2, 2), name='pool_1'), # (50, 6)
         
-        # Block 2
+        # Block 2: Refine features (High Time Resolution)
         tf.keras.layers.Conv2D(64, (3, 3), activation='relu', padding='same', name='conv_2'),
-        tf.keras.layers.MaxPool2D((2, 2), name='pool_2'),
-
-        # Block 3
-        tf.keras.layers.Conv2D(64, (1, 1), activation='relu', name='dense_conv'),
-        tf.keras.layers.Dropout(0.5, name='dropout'),
+        tf.keras.layers.BatchNormalization(),
+        # CRITICAL CHANGE: Pool Frequency (y) only, Keep Time (x) intact
+        # This helps distinguish "Deepa" vs "Deepak" (the 'k' is a short time event)
+        tf.keras.layers.MaxPool2D((1, 2), name='pool_2'), # (50, 3)
         
-        # Block 4: Class Projection
+        # Block 3: Deep features
+        tf.keras.layers.Conv2D(64, (3, 3), activation='relu', padding='same', name='conv_3'),
+        tf.keras.layers.Dropout(0.3, name='dropout_1'), # Prevent overfitting to TTS artifacts
+        
+        # Block 4: Compression
+        tf.keras.layers.Conv2D(64, (1, 1), activation='relu', name='dense_conv'),
+        tf.keras.layers.Dropout(0.5, name='dropout_2'),
+        
+        # Block 5: Class Projection
         tf.keras.layers.Conv2D(num_classes, (1, 1), activation='linear', name='output_conv'),
         
-        # Aggregation
+        # Aggregation: Average over time/freq
         tf.keras.layers.GlobalAveragePooling2D(name='global_avg_pool'),
         
         # Activation
@@ -313,7 +321,34 @@ def main():
     history = model.fit(X, y, epochs=50, batch_size=32, validation_split=0.2, verbose=1, class_weight=class_weight_dict)
     
     print(f"Saving model to {MODEL_SAVE_PATH}...")
+    print(f"Saving model to {MODEL_SAVE_PATH}...")
     model.save(MODEL_SAVE_PATH)
+
+    # --- Validation Report ---
+    print("\n--- Generating Confusion Matrix (Validation) ---")
+    try:
+        from sklearn.metrics import confusion_matrix, classification_report
+        
+        # 1. Re-split to match training (not perfect but good for approximation)
+        # Ideally we'd use train_test_split but here we used validation_split in fit()
+        # So we'll evaluate on the WHOLE dataset (train+val) just to see if it learned.
+        # Speed: Predict in batches
+        y_pred_probs = model.predict(X, batch_size=32, verbose=1)
+        y_pred = np.argmax(y_pred_probs, axis=1)
+        
+        cm = confusion_matrix(y, y_pred)
+        print("\nConfusion Matrix:")
+        print(cm)
+        print("\nClassification Report:")
+        print(classification_report(y, y_pred, target_names=CLASSES))
+        
+        print(f"Total Background (0): {sum(y==0)}")
+        print(f"Total Deepa (1): {sum(y==1)}")
+        print(f"Total Deepak (2): {sum(y==2)}")
+
+    except Exception as e:
+        print(f"Skipping evaluation report: {e}")
+    # -------------------------
 
     # Plotting Training History
     try:
