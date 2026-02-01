@@ -55,9 +55,9 @@ training/wakeword_model.h5
 web/wakeword_model.tflite
 
 # Virtual Env
+# Virtual Env
 .venv
 env/
 venv/
 data/
-gcp_key.json
 gcp_key.json

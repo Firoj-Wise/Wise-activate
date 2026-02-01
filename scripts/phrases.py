@@ -10,26 +10,77 @@ PHRASES = {
         "Okay Deepak", "Okay Deepa",
         "Listen Deepak", "Listen Deepa",
         "Greetings Deepak", "Greetings Deepa",
-        "Good morning Deepak", "Good morning Deepa"
+        "Good morning Deepak", "Good morning Deepa",
+        "Are you there Deepak?", "Are you there Deepa?",
+        "Can you hear me Deepak?", "Can you hear me Deepa?",
+        "Deepak help me", "Deepa help me",
+        "Deepak stop", "Deepa stop",
+        "Deepak please", "Deepa please"
     ],
     "ne": [
-        "ए दीपक", "ए दीपा",          # Hey Deepak/Deepa
-        "नमस्ते दीपक", "नमस्ते दीपा",  # Namaste Deepak/Deepa
-        "नमस्कार दीपक", "नमस्कार दीपा", # Namaskar Deepak/Deepa
-        "दीपक उठ", "दीपा उठ",        # Deepak/Deepa wake up (Informal)
-        "दीपक जाग्नुहोस्", "दीपा जाग्नुहोस्", # Deepak/Deepa wake up (Formal)
-        "दीपक सुन्नुहोस्", "दीपा सुन्नुहोस्", # Listen Deepak/Deepa (Formal)
-        "ओ दीपक", "ओ दीपा",          # Oh Deepak/Deepa
-        "सुन दीपक", "सुन दीपा"       # Listen Deepak/Deepa (Informal)
+        # Greetings & General
+        "नमस्ते दीपक", "नमस्ते दीपा",          # Namaste
+        "नमस्कार दीपक", "नमस्कार दीपा",        # Namaskar
+        "शुभ प्रभात दीपक", "शुभ प्रभात दीपा",  # Good Morning
+        "शुभ रात्रि दीपक", "शुभ रात्रि दीपा",  # Good Night
+        "स्वागत छ दीपक", "स्वागत छ दीपा",      # Welcome
+        "तपाईंलाई कस्तो छ दीपक?", "तपाईंलाई कस्तो छ दीपा?", # How are you?
+        "के छ खबर दीपक?", "के छ खबर दीपा?",    # What's up?
+        "सबै ठिक छ दीपक?", "सबै ठिक छ दीपा?",  # Is everything fine?
+        "फेरि भेटौला दीपक", "फेरि भेटौला दीपा", # See you again
+        "धन्यवाद दीपक", "धन्यवाद दीपा",        # Thank you
+
+        # Commands & Wake Words
+        "ए दीपक", "ए दीपा",                  # Hey
+        "ओ दीपक", "ओ दीपा",                  # Oh
+        "दीपक सुन्नुहोस्", "दीपा सुन्नुहोस्",        # Listen (Formal)
+        "दीपक सुन", "दीपा सुन",              # Listen (Informal)
+        "दीपक यता आउनुहोस्", "दीपा यता आउनुहोस्", # Come here
+        "दीपक उठ्नुहोस्", "दीपा उठ्नुहोस्",        # Wake up
+        "दीपक जाग्नुहोस्", "दीपा जाग्नुहोस्",       # Wake up (Formal)
+        "दीपक छिटो आउनुस्", "दीपा छिटो आउनुस्",   # Come fast
+        "दीपक काम गर", "दीपा काम गर",        # Do work
+        "दीपक चुप लाग", "दीपा चुप लाग",       # Be quiet
+        "दीपक बाहिर जाउ", "दीपा बाहिर जाउ",    # Go out
+        "दीपक भित्र आउ", "दीपा भित्र आउ",      # Come in
+        "दीपक ढोका खोल", "दीपा ढोका खोल",     # Open door
+        "दीपक बत्ति बाल", "दीपा बत्ति बाल",     # Turn on light
+        
+        # Urgent / Triggers
+        "हेलो दीपक", "हेलो दीपा",
+        "अरे दीपक", "अरे दीपा",
+        "ल दीपक", "ल दीपा"                   # Okay Deepak
     ],
     "mai": [
-        "दीपक सुनु", "दीपा सुनु",      # Listen Deepak/Deepa
-        "अहाँ सुनु दीपक", "अहाँ सुनु दीपा", # You listen Deepak/Deepa (Respectful)
-        "हे दीपक", "हे दीपा",          # Oh Deepak/Deepa
-        "दीपक जगु", "दीपा जगु",        # Wake up Deepak/Deepa
-        "प्रणाम दीपक", "प्रणाम दीपा",   # Pranam Deepak/Deepa
-        "नमस्कार दीपक", "नमस्कार दीपा", # Namaskar Deepak/Deepa
-        "दीपक उठु", "दीपा उठु"         # Deepak/Deepa wake up
+        # Greetings & General
+        "प्रणाम दीपक", "प्रणाम दीपा",       # Pranam (Formal Hello)
+        "नमस्कार दीपक", "नमस्कार दीपा",     # Namaskar
+        "अहाँ फेर सँ कहू दीपक", "अहाँ फेर सँ कहू दीपा", # Say it again
+        "की हाल चाल अछि दीपक?", "की हाल चाल अछि दीपा?", # How are you?
+        "अहाँ कोना छी दीपक?", "अहाँ कोना छी दीपा?",    # How are you doing?
+        "सभ कुशल मंगल दीपक?", "सभ कुशल मंगल दीपा?",   # Is everything fine?
+        "स्वागत अछि दीपक", "स्वागत अछि दीपा",         # Welcome
+        "शुभ प्रभात दीपक", "शुभ प्रभात दीपा",         # Good Morning
+        "शुभ रात्रि दीपक", "शुभ रात्रि दीपा",         # Good Night
+        
+        # Commands (Wake Words Context)
+        "दीपक सुनु", "दीपा सुनु",          # Listen
+        "अहाँ सुनु दीपक", "अहाँ सुनु दीपा",     # You listen (Respectful)
+        "हे दीपक", "हे दीपा",              # Oh Deepak/Deepa
+        "दीपक उठु", "दीपा उठु",            # Wake up
+        "दीपक जगु", "दीपा जगु",            # Wake up (Formal)
+        "दीपक कनी सुनु", "दीपा कनी सुनु",     # Listen a bit
+        "दीपक एहिठाम आउ", "दीपा एहिठाम आउ",   # Come here
+        "दीपक घर जाउ", "दीपा घर जाउ",        # Go home
+        "दीपक काज करू", "दीपा काज करू",       # Do work
+        "दीपक रुकु", "दीपा रुकु",            # Stop
+        "दीपक बदि जाउ", "दीपा बदि जाउ",       # Go away (Respectful)
+        
+        # Short / Quick Triggers
+        "ए दीपक", "ए दीपा",
+        "अरे दीपक", "अरे दीपा",
+        "हँ दीपक", "हँ दीपा",
+        "मैथिली बाजू दीपक", "मैथिली बाजू दीपा" # Speak Maithili
     ]
 }
 

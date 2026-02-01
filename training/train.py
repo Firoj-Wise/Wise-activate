@@ -88,19 +88,25 @@ def add_reverb(y):
     rir = np.random.normal(0, 1, rir_len) * decay
     rir = rir / np.max(np.abs(rir)) # Normalize RIR
     
-    # 2. Convolve
-    # Scipy convolve is slow, let's use FFT based or simple mix?
-    # For speed in training loop, we might want to just mix a delayed version?
-    # Simple "Echo":
-    delay = int(SAMPLE_RATE * np.random.uniform(0.01, 0.05))
-    decay_factor = np.random.uniform(0.1, 0.4)
-    
-    if len(y) > delay:
-        echo = np.roll(y, delay)
-        echo[:delay] = 0
-        y = y + echo * decay_factor
+    # 2. Convolve (True Room Simulation)
+    # properly simulates the audio bouncing around the room
+    try:
+        from scipy.signal import fftconvolve
         
-    return normalize_audio(y)
+        # Convolve audio with Room Impulse Response
+        y_aug = fftconvolve(y, rir, mode="full")
+        
+        # Trim to original length (convolution expands size)
+        y_aug = y_aug[:len(y)]
+        
+        return normalize_audio(y_aug)
+    except ImportError:
+        # Fallback if scipy not found (though librosa installs it)
+        print("Warning: scipy not found. Using simple Echo.")
+        delay = int(SAMPLE_RATE * 0.02)
+        if len(y) > delay:
+            y[:len(y)-delay] += y[delay:] * 0.3
+        return normalize_audio(y)
 
 def apply_spec_augment(mfcc):
     """
@@ -344,11 +350,10 @@ def main():
     print("\n--- Generating Confusion Matrix (Validation) ---")
     try:
         from sklearn.metrics import confusion_matrix, classification_report
+        import seaborn as sns
+        import matplotlib.pyplot as plt
         
         # 1. Re-split to match training (not perfect but good for approximation)
-        # Ideally we'd use train_test_split but here we used validation_split in fit()
-        # So we'll evaluate on the WHOLE dataset (train+val) just to see if it learned.
-        # Speed: Predict in batches
         y_pred_probs = model.predict(X, batch_size=32, verbose=1)
         y_pred = np.argmax(y_pred_probs, axis=1)
         
@@ -358,6 +363,20 @@ def main():
         print("\nClassification Report:")
         print(classification_report(y, y_pred, target_names=CLASSES))
         
+        # --- HEATMAP VISUALIZATION ---
+        print("Saving Confusion Matrix Heatmap...")
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=CLASSES, yticklabels=CLASSES)
+        plt.xlabel('Predicted')
+        plt.ylabel('Actual')
+        plt.title('Confusion Matrix Heatmap')
+        
+        cm_path = BASE_DIR / "training" / "confusion_matrix.png"
+        plt.tight_layout()
+        plt.savefig(cm_path)
+        print(f"Saved Heatmap to {cm_path}")
+        # -----------------------------
+
         print(f"Total Background (0): {sum(y==0)}")
         print(f"Total Deepa (1): {sum(y==1)}")
         print(f"Total Deepak (2): {sum(y==2)}")

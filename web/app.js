@@ -3,7 +3,7 @@ const SAMPLE_RATE = 16000;
 const N_FFT = 512;
 const HOP_LENGTH = 160;
 const N_MFCC = 13;
-const THRESHOLD = 0.96; // Increased from 0.85 for stricter trigger
+const THRESHOLD = 0.85; // Lowered from 0.96 to improve detection sensitivity
 const MIN_CONSECUTIVE = 2; // Require 2 consecutive frames to trigger
 
 // Core Audio Processing & Inference Variables
@@ -14,11 +14,53 @@ let stream = null;         // Microphone MediaStream
 let isListening = false;   // State flag for the listening loop
 let consecutiveTriggers = 0; // Counter for stability check
 
-// ... (Rest of UI Elements unchanged)
+// UI Elements
+const statusDiv = document.getElementById("status");
+const startBtn = document.getElementById("startBtn");
+const stopBtn = document.getElementById("stopBtn");
+const indicator = document.getElementById("indicator");
+const scoreFill = document.getElementById("scoreFill");
+const confidenceDisplay = document.getElementById("confidenceDisplay");
+const languageDisplay = document.getElementById("languageDisplay");
 
-// ... (loadModel unchanged)
+async function loadModel() {
+    statusDiv.innerText = "Loading Model...";
+    try {
+        tflite.setWasmPath('tflite/');
+        model = await tflite.loadTFLiteModel(MODEL_PATH);
+        statusDiv.innerText = "Ready to Listen";
+        startBtn.disabled = false;
+        console.log("Model loaded successfully");
+    } catch (e) {
+        statusDiv.innerText = "Error Loading Model";
+        console.error(e);
+    }
+}
 
-// ... (preprocessAudio unchanged)
+function preprocessAudio(signal) {
+    /**
+     * Extracts MFCC features from the raw audio signal using Meyda.
+     * 
+     * this implementation aligns with the Python training pipeline:
+     * - Frame Size (N_FFT): 512
+     * - Hop Length: 160
+     * - MFCC Coefficients: 13
+     */
+    const mfccs = [];
+    Meyda.bufferSize = N_FFT;
+    for (let i = 0; i <= signal.length - N_FFT; i += HOP_LENGTH) {
+        const frame = signal.slice(i, i + N_FFT);
+        try {
+            const features = Meyda.extract('mfcc', frame);
+            if (features && features.length === N_MFCC) {
+                mfccs.push(features);
+            }
+        } catch (e) {
+            console.error("Meyda error", e);
+        }
+    }
+    return mfccs;
+}
 
 async function runInference(audioData) {
     if (!model) return;
@@ -71,9 +113,7 @@ async function runInference(audioData) {
         let detected = false;
         let labelText = "Wake Word Detected!";
 
-        // Adaptive Inference Logic
-        // ... (Assuming standard multi-class logic) ... 
-
+        // Adaptive Inference Logic for 7-Class Model
         let maxScore = -1;
         let maxIndex = -1;
 
@@ -98,16 +138,10 @@ async function runInference(audioData) {
                 ];
                 const lang = languages[maxIndex] || "Unknown";
                 labelText = `Wake Word (${lang}) Detected!`;
-                // Reset counter to prevent spamming triggers every frame
-                // consecutiveTriggers = 0; 
-                // Actually, usually beneficial to keep it high or cooldown. 
-                // Let's rely on the tokenizer cooldown in 'triggerWakeWord'
             }
         } else {
             consecutiveTriggers = 0; // Reset if we drop below threshold
         }
-
-        // (UI Visuals Code...)
 
         // Update UI Visuals
         const percentage = (score * 100).toFixed(1);
@@ -125,12 +159,6 @@ async function runInference(audioData) {
 
         if (detected) {
             triggerWakeWord(labelText);
-            // languageDisplay is handled in triggerWakeWord or here? 
-            // Let's do it here for specificity if we have the lang
-            // Actually, labelText already has it. 
-            // But user asked to "show me that in UI as well".
-            // Let's parse it or pass it.
-            // Simplest: just update the element.
             const langMatch = labelText.match(/\((.*?)\)/);
             if (langMatch) {
                 languageDisplay.innerText = `Language: ${langMatch[1]}`;
@@ -194,10 +222,7 @@ async function startListening() {
         // Explicitly tell Meyda we are using 16kHz (MUST match training)
         if (typeof Meyda !== 'undefined') {
             Meyda.sampleRate = SAMPLE_RATE;
-            Meyda.melBands = 40; // Default for librosa is often 128, but Meyda defaults to 40. We need to check if this aligns.
-            // Librosa default n_mels=128. Meyda default n_mels=40? 
-            // Actually, for MFCC only, librosa uses n_mfcc=20 usually. We used 13.
-            // Let's stick to just sampleRate for now as that's the big one.
+            Meyda.melBands = 40;
             Meyda.windowingFunction = "hanning"; // Librosa default
         }
 
@@ -212,16 +237,12 @@ async function startListening() {
             }
 
             // Sliding window (Circular Buffer)
-            // We need to push 'processedData' (which is the new 16k chunk) into 'rollingBuffer'
-            // Rolling buffer is 16000 long (1 second)
-
-            // Shift existing data left
             const newLength = processedData.length;
             rollingBuffer.set(rollingBuffer.subarray(newLength));
             // Append new data at end
             rollingBuffer.set(processedData, rollingBuffer.length - newLength);
 
-            // Run inference on the full 1-second 16k buffer
+            // Run inference
             runInference(rollingBuffer);
         };
 
@@ -242,17 +263,7 @@ async function startListening() {
 
 // Simple Downsampler (Linear Interpolation)
 function downsampleBuffer(buffer, inputRate, outputRate) {
-    /**
-     * Downsamples audio from the browser's native sample rate (often 44.1k or 48k)
-     * to the model's required 16kHz.
-     * 
-     * Uses simple decimation/nearest-neighbor selection. While a low-pass filter
-     * is technically preferred to prevent aliasing, this method is computationally 
-     * inexpensive and sufficient for speech keywords.
-     */
-    if (outputRate === inputRate) {
-        return buffer;
-    }
+    if (outputRate === inputRate) return buffer;
     const sampleRateRatio = inputRate / outputRate;
     const newLength = Math.round(buffer.length / sampleRateRatio);
     const result = new Float32Array(newLength);
@@ -263,8 +274,6 @@ function downsampleBuffer(buffer, inputRate, outputRate) {
     }
     return result;
 }
-
-
 
 function stopListening() {
     if (!isListening) return;

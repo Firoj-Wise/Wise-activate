@@ -59,21 +59,30 @@ def convert_to_wav(mp3_path, wav_path):
         if os.path.exists(mp3_path): os.remove(mp3_path)
         return False
 
+import hashlib
+
+def get_hash(text):
+    return hashlib.md5(text.encode('utf-8')).hexdigest()[:10]
+
 async def main():
     print("Starting Hybrid Dataset Generation (Edge + Google)...")
     
     # Check GCP
     gcp_client = gcp_tts.get_gcp_client()
     if gcp_client:
-        print("✅ GCP Credentials found. Using Google Premium Voices.")
+        print("[OK] GCP Credentials found. Using Google Premium Voices.")
     else:
-        print("⚠️ No GCP Credentials. Skipping Google Voices.")
+        print("[WARNING] No GCP Credentials. Skipping Google Voices.")
 
     # 1. Generate Wake Words
     for lang, phrases in PHRASES.items():
         print(f"--- Generating {lang} samples ---")
+        
+        # OVERSAMPLING STRATEGY:
+        repeat_count = 5 if lang in ["ne", "mai"] else 1
+        print(f"   -> Oversampling Factor: {repeat_count}x")
+        
         count = 0
-        file_id = 0 # Deterministic ID
         
         # A. Edge TTS Generation
         edge_voices = VOICES[lang]
@@ -90,32 +99,57 @@ async def main():
             dest_dir = DATA_DIR / keyword / lang
             dest_dir.mkdir(parents=True, exist_ok=True)
 
+            # Standard Generation
             for voice in edge_voices:
-                # More aggressive variations
                 rates = ["-25%", "+0%", "+25%"]
                 pitches = ["-15Hz", "+0Hz", "+15Hz"]
                 
-                for speed in rates:
-                    for pitch in pitches:
-                        filename = f"edge_{file_id}_{voice}_{speed}_{pitch}.mp3".replace("%", "").replace("+", "")
-                        mp3_path = dest_dir / filename
-                        wav_path = str(mp3_path).replace(".mp3", ".wav")
-                        
-                        if not os.path.exists(wav_path):
-                            # Only generate if missing
-                            success = await generate_edge_speech(phrase, voice, mp3_path, speed, pitch)
-                            if success:
-                                if convert_to_wav(mp3_path, wav_path):
-                                    count += 1
-                                    if count % 10 == 0: print(f"Edge: {phrase} ({lang}) -> {keyword}")
-                        
-                        file_id += 1 # Always increment
+                # REPEAT LOOP for Oversampling
+                for i in range(repeat_count):
+                    for speed in rates:
+                        for pitch in pitches:
+                            # Unique HASH based on parameters (Idempotent)
+                            # Include 'i' in hash to distinction repetitions
+                            unique_str = f"edge_{phrase}_{voice}_{speed}_{pitch}_{i}"
+                            file_hash = get_hash(unique_str)
+                            
+                            filename = f"edge_{file_hash}.mp3"
+                            mp3_path = dest_dir / filename
+                            wav_path = str(mp3_path).replace(".mp3", ".wav")
+                            
+                            if not os.path.exists(wav_path):
+                                success = await generate_edge_speech(phrase, voice, mp3_path, speed, pitch)
+                                if success:
+                                    if convert_to_wav(mp3_path, wav_path):
+                                        count += 1
+                                        if count % 50 == 0: print(f"Edge ({lang}): {phrase} -> {keyword}")
+
+            # CROSS-LINGUAL ACCENT INJECTION (User Request: "Nepali accent in English")
+            if lang == "en":
+                nepali_voices = VOICES["ne"]
+                print(f"   -> Injecting Nepali Accents for: {phrase}")
+                
+                for voice in nepali_voices:
+                    speed = "+0%"
+                    pitch = "+0Hz"
+                    
+                    unique_str = f"edge_accent_{phrase}_{voice}"
+                    file_hash = get_hash(unique_str)
+                    
+                    filename = f"edge_nepali_accent_{file_hash}.mp3"
+                    mp3_path = dest_dir / filename
+                    wav_path = str(mp3_path).replace(".mp3", ".wav")
+                    
+                    if not os.path.exists(wav_path):
+                        success = await generate_edge_speech(phrase, voice, mp3_path, speed, pitch)
+                        if success:
+                            if convert_to_wav(mp3_path, wav_path):
+                                count += 1
 
         # B. Google TTS Generation
         if gcp_client:
             gcp_voice_list = GOOGLE_VOICES.get(lang, [])
             for phrase in phrases:
-                # DETERMINE KEYWORD FOLDER
                 if "deepak" in phrase.lower() or "दीपक" in phrase:
                     keyword = "deepak"
                 elif "deepa" in phrase.lower() or "दीपा" in phrase:
@@ -131,26 +165,27 @@ async def main():
                         (0.75, -4.0), (1.0, 0.0), (1.25, 4.0)
                     ]
                     
-                    for rate, pitch in variations:
-                        filename = f"gcp_{file_id}_{voice}_{rate}_{pitch}.mp3"
-                        mp3_path = dest_dir / filename
-                        wav_path = str(mp3_path).replace(".mp3", ".wav")
-                        
-                        if not os.path.exists(wav_path):
-                            success = gcp_tts.generate_gcp_audio(phrase, voice, mp3_path, pitch=pitch, speaking_rate=rate)
-                            if success:
-                                if convert_to_wav(mp3_path, wav_path):
-                                    count += 1
-                                    if count % 10 == 0: print(f"GCP: {phrase} ({lang}) -> {keyword}")
-                        
-                        file_id += 1 # Always increment
+                    for i in range(repeat_count):
+                        for rate, pitch in variations:
+                            unique_str = f"gcp_{phrase}_{voice}_{rate}_{pitch}_{i}"
+                            file_hash = get_hash(unique_str)
+                            
+                            filename = f"gcp_{file_hash}.mp3"
+                            mp3_path = dest_dir / filename
+                            wav_path = str(mp3_path).replace(".mp3", ".wav")
+                            
+                            if not os.path.exists(wav_path):
+                                success = gcp_tts.generate_gcp_audio(phrase, voice, mp3_path, pitch=pitch, speaking_rate=rate)
+                                if success:
+                                    if convert_to_wav(mp3_path, wav_path):
+                                        count += 1
+                                        if count % 50 == 0: print(f"GCP ({lang}): {phrase} -> {keyword}")
 
         print(f"Finished {lang}: {count} new files.")
 
     # 2. Generate Hard Negatives (MASSIVE SCALE)
     print("Generating MASSIVE Hard Negatives...")
     neg_count = 0
-    file_id = 0 # Deterministic ID for filenames
     
     # Combine lists
     neg_tasks = [
@@ -159,7 +194,6 @@ async def main():
         (NEGATIVE_SENTENCES_MAI, "mai")
     ]
     
-    # Augmentation options for Negatives (Same as Positives)
     rates = ["-25%", "+0%", "+25%"]
     pitches = ["-15Hz", "+0Hz", "+15Hz"]
     
@@ -168,24 +202,15 @@ async def main():
         gcp_voice_list = GOOGLE_VOICES.get(lang_code, []) if gcp_client else []
         
         for sent in sent_list:
-            # EDGE TTS: Generate ALL variations for random voices
-            # To save time, pick 2 random voices per sentence instead of ALL voices
-            # Deterministically seed random choice based on file_id to ensure reproducibility? 
-            # Ideally yes, but for now just use loop index or stable sort. 
-            # We'll stick to random.sample but since file_id increments every loop, names are unique.
-            # But "Resume" implies we pick the SAME voices next time? 
-            # No, random.sample is non-deterministic across runs.
-            # To fix RESUME, we must pick voices deterministicly.
-            # Fix: Iterate ALL voices? Or pick deterministic subset?
-            # Let's simple iterate ALL voices to be safe and robust, limit variations if needed.
-            # Or use Voices[i % len]
-            
-            selected_edge_voices = edge_voices # Use ALL voices for consistency
+            selected_edge_voices = edge_voices 
             
             for voice in selected_edge_voices:
                 for speed in rates:
                     for pitch in pitches:
-                        filename = f"neg_edge_{file_id}_{speed}_{pitch}.mp3".replace("%", "").replace("+", "")
+                        unique_str = f"neg_edge_{sent}_{voice}_{speed}_{pitch}"
+                        file_hash = get_hash(unique_str)
+                        
+                        filename = f"neg_edge_{file_hash}.mp3"
                         mp3_path = BACKGROUND_DIR / filename
                         wav_path = str(mp3_path).replace(".mp3", ".wav")
                         
@@ -195,31 +220,27 @@ async def main():
                                 if convert_to_wav(mp3_path, wav_path):
                                     neg_count += 1
                                     if neg_count % 50 == 0: print(f"Negatives: {neg_count}")
-                        
-                        file_id += 1 # Always increment ID
 
             # GCP TTS: Generate variations (if available)
             if gcp_voice_list:
-                # Pick 1 random GCP voice? Non-deterministic. 
-                # Let's iterate all GCP voices? Too many. 
-                # Pick deterministic: Voices[file_id % len]
-                voice = gcp_voice_list[file_id % len(gcp_voice_list)]
-                
-                gcp_variations = [(0.8, -3.0), (1.0, 0.0), (1.2, 3.0)]
-                
-                for rate, pitch in gcp_variations:
-                    filename = f"neg_gcp_{file_id}_{rate}_{pitch}.mp3"
-                    mp3_path = BACKGROUND_DIR / filename
-                    wav_path = str(mp3_path).replace(".mp3", ".wav")
+                # Iterate ALL GCP voices for Negatives to be robust
+                for voice in gcp_voice_list:
+                    gcp_variations = [(0.8, -3.0), (1.0, 0.0), (1.2, 3.0)]
                     
-                    if not os.path.exists(wav_path):
-                        success = gcp_tts.generate_gcp_audio(sent, voice, mp3_path, pitch=pitch, speaking_rate=rate)
-                        if success:
-                            if convert_to_wav(mp3_path, wav_path):
-                                neg_count += 1
-                    
-                    file_id += 1 # Always increment ID
-
+                    for rate, pitch in gcp_variations:
+                        unique_str = f"neg_gcp_{sent}_{voice}_{rate}_{pitch}"
+                        file_hash = get_hash(unique_str)
+                        
+                        filename = f"neg_gcp_{file_hash}.mp3"
+                        mp3_path = BACKGROUND_DIR / filename
+                        wav_path = str(mp3_path).replace(".mp3", ".wav")
+                        
+                        if not os.path.exists(wav_path):
+                            success = gcp_tts.generate_gcp_audio(sent, voice, mp3_path, pitch=pitch, speaking_rate=rate)
+                            if success:
+                                if convert_to_wav(mp3_path, wav_path):
+                                    neg_count += 1
+    
     print(f"Finished Negatives: {neg_count} files.")
 
 if __name__ == "__main__":
