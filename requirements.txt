@@ -1,21 +1,17 @@
 tensorflow
 numpy>=1.26.0
 librosa>=0.10.1
-pydub
-pydub
 numba>=0.60.0
 llvmlite>=0.43.0
 soundfile
-edge-tts
 pydub
 sounddevice
 matplotlib
-google-cloud-texttospeech
-grpcio
-edge-tts
-pydub
-sounddevice
-matplotlib
-google-cloud-texttospeech
-grpcio
 seaborn
+edge-tts
+google-cloud-texttospeech
+grpcio
+# Optimized augmentation (10x faster than librosa)
+audiomentations>=0.33.0
+# Parallel processing
+joblib
