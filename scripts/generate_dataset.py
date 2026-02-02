@@ -4,9 +4,10 @@ import random
 import hashlib
 import numpy as np
 import scipy.io.wavfile as wav
+import edge_tts
 from pydub import AudioSegment
 from pathlib import Path
-from phrases import PHRASES, NEGATIVE_SENTENCES_EN, NEGATIVE_SENTENCES_NE, NEGATIVE_SENTENCES_MAI
+from phrases import PHRASES, VOICES
 import gcp_tts
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -19,30 +20,29 @@ for lang in PHRASES.keys():
         (DATA_DIR / keyword / lang).mkdir(parents=True, exist_ok=True)
 BACKGROUND_DIR.mkdir(parents=True, exist_ok=True)
 
-# MASSIVE GCP VOICE LIST (Wavenet + Neural2 + Studio)
+# Massive GCP Voice List
 GOOGLE_VOICES = {
     "en": [
-        "en-IN-Standard-A", "en-IN-Standard-B", "en-IN-Standard-C", "en-IN-Standard-D",
         "en-IN-Wavenet-A", "en-IN-Wavenet-B", "en-IN-Wavenet-C", "en-IN-Wavenet-D",
-        "en-IN-Neural2-A", "en-IN-Neural2-B", "en-IN-Neural2-C", "en-IN-Neural2-D",
-        "en-US-Standard-A", "en-US-Standard-B", "en-US-Standard-C", "en-US-Standard-D", "en-US-Standard-E",
-        "en-US-Wavenet-A", "en-US-Wavenet-B", "en-US-Wavenet-C", "en-US-Wavenet-D", "en-US-Wavenet-E",
-        "en-US-Neural2-A", "en-US-Neural2-C", "en-US-Neural2-D", "en-US-Neural2-E",
-        "en-US-Studio-O", "en-US-Studio-Q"
+        "en-US-Wavenet-A", "en-US-Wavenet-B", "en-US-Wavenet-C", "en-US-Wavenet-D",
+        "en-US-Neural2-A", "en-US-Neural2-C", "en-US-Neural2-F"
     ],
     "ne": [
-        # Using Hindi voices as High-Fidelity proxies for Nepali phonetics
-        "hi-IN-Standard-A", "hi-IN-Standard-B", "hi-IN-Standard-C", "hi-IN-Standard-D",
-        "hi-IN-Wavenet-A", "hi-IN-Wavenet-B", "hi-IN-Wavenet-C", "hi-IN-Wavenet-D",
-        "hi-IN-Neural2-A", "hi-IN-Neural2-B", "hi-IN-Neural2-C", "hi-IN-Neural2-D"
+        "hi-IN-Wavenet-A", "hi-IN-Wavenet-B", "hi-IN-Neural2-A", "hi-IN-Neural2-B"
     ],
     "mai": [
-        # Using Hindi voices as High-Fidelity proxies for Maithili phonetics
-        "hi-IN-Standard-A", "hi-IN-Standard-B", "hi-IN-Standard-C", "hi-IN-Standard-D",
-        "hi-IN-Wavenet-A", "hi-IN-Wavenet-B", "hi-IN-Wavenet-C", "hi-IN-Wavenet-D",
-        "hi-IN-Neural2-A", "hi-IN-Neural2-B", "hi-IN-Neural2-C", "hi-IN-Neural2-D"
+        "hi-IN-Wavenet-A", "hi-IN-Neural2-A"
     ]
 }
+
+async def generate_edge_speech(text, voice, output_path, rate="+0%", pitch="+0Hz"):
+    """Generates speech using edge-tts (Fast)."""
+    try:
+        communicate = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch)
+        await communicate.save(output_path)
+        return True
+    except Exception as e:
+        return False
 
 def convert_to_wav(mp3_path, wav_path):
     """Converts mp3 to wav (16kHz, mono) and deletes mp3."""
@@ -52,94 +52,159 @@ def convert_to_wav(mp3_path, wav_path):
         audio.export(wav_path, format="wav")
         os.remove(mp3_path)
         return True
-    except Exception as e:
-        print(f"Error converting {mp3_path}: {e}")
+    except:
         if os.path.exists(mp3_path): os.remove(mp3_path)
         return False
 
 def get_hash(text):
     return hashlib.md5(text.encode('utf-8')).hexdigest()[:10]
 
-async def main():
-    print("🚀 Starting GCP-ONLY High-Fidelity Dataset Generation...")
-    
-    gcp_client = gcp_tts.get_gcp_client()
-    if not gcp_client:
-        print("[CRITICAL] GCP Credentials not found. Check gcp_key.json!")
-        return
+# --- Synthetic Noise Generators ---
 
-    # 1. Generate Wake Words (Amplify voices via standard GCP SDK)
+def generate_white_noise(path, duration=1.0, sr=16000):
+    samples = int(sr * duration)
+    data = np.random.normal(0, 0.05, samples)
+    data = (data * 32767).astype(np.int16)
+    wav.write(path, sr, data)
+
+def generate_brown_noise(path, duration=1.0, sr=16000):
+    samples = int(sr * duration)
+    data = np.cumsum(np.random.normal(0, 0.02, samples))
+    data = (data / (np.max(np.abs(data)) + 1e-6) * 8000).astype(np.int16)
+    wav.write(path, sr, data)
+
+def generate_airplane_rumble(path, duration=1.0, sr=16000):
+    samples = int(sr * duration)
+    t = np.linspace(0, duration, samples)
+    rumble = np.cumsum(np.random.normal(0, 0.08, samples))
+    hum = 0.15 * np.sin(2 * np.pi * 75 * t)
+    data = rumble + hum
+    data = (data / (np.max(np.abs(data)) + 1e-6) * 10000).astype(np.int16)
+    wav.write(path, sr, data)
+
+def generate_train_noise(path, duration=1.0, sr=16000):
+    samples = int(sr * duration)
+    rumble = np.cumsum(np.random.normal(0, 0.06, samples))
+    clack = np.zeros(samples)
+    for i in [0.1, 0.35, 0.6, 0.85]:
+        idx = int(i * samples)
+        pulse = np.random.normal(0, 0.4, 300)
+        env = np.exp(-np.linspace(0, 4, 300))
+        clack[idx:idx+300] = pulse * env
+    data = rumble + clack
+    data = (data / (np.max(np.abs(data)) + 1e-6) * 9000).astype(np.int16)
+    wav.write(path, sr, data)
+
+def generate_typing_noise(path, duration=1.0, sr=16000):
+    samples = int(sr * duration)
+    data = np.zeros(samples)
+    for _ in range(random.randint(4, 12)):
+        idx = random.randint(0, samples - 500)
+        click = np.random.normal(0, 0.3, random.randint(40, 150))
+        env = np.exp(-np.linspace(0, 6, len(click)))
+        data[idx:idx+len(click)] += click * env
+    data = (data / (np.max(np.abs(data)) + 1e-6) * 15000).astype(np.int16)
+    wav.write(path, sr, data)
+
+def generate_office_noise(path, duration=1.0, sr=16000):
+    samples = int(sr * duration)
+    base = np.cumsum(np.random.normal(0, 0.015, samples))
+    clicks = np.zeros(samples)
+    for _ in range(random.randint(3, 8)):
+        idx = random.randint(0, samples - 300)
+        click = np.random.normal(0, 0.1, random.randint(20, 100))
+        clicks[idx:idx+len(click)] += click
+    floor = np.random.normal(0, 0.01, samples)
+    data = base + clicks + floor
+    data = (data / (np.max(np.abs(data)) + 1e-6) * 8000).astype(np.int16)
+    wav.write(path, sr, data)
+
+def generate_hum_noise(path, duration=1.0, sr=16000):
+    samples = int(sr * duration)
+    t = np.linspace(0, duration, samples)
+    f0 = random.uniform(80, 150)
+    data = np.sin(2 * np.pi * f0 * t) + 0.5 * np.sin(2 * np.pi * 2*f0 * t) + 0.2 * np.sin(2 * np.pi * 3*f0 * t)
+    jitter = 0.05 * np.cumsum(np.random.normal(0, 1, samples))
+    data = data * np.exp(1j * jitter).real
+    data = (data / (np.max(np.abs(data)) + 1e-6) * 15000).astype(np.int16)
+    wav.write(path, sr, data)
+
+def generate_scream_noise(path, duration=1.0, sr=16000):
+    samples = int(sr * duration)
+    t = np.linspace(0, duration, samples)
+    f_mod = 1000 + 4000 * np.sin(2 * np.pi * 10 * t)
+    data = np.sin(2 * np.pi * f_mod * t) * np.random.normal(0.8, 0.2, samples)
+    data = (data / (np.max(np.abs(data)) + 1e-6) * 20000).astype(np.int16)
+    wav.write(path, sr, data)
+
+async def main():
+    print("🚀 Starting HEAVY Hybrid Generation (Edge + GCP) + Negative vocalizations...")
+    gcp_client = gcp_tts.get_gcp_client()
+
+    # 1. Generate Wake Words
     for lang_key, phrases in PHRASES.items():
-        print(f"--- Generating {lang_key} Wake Words (Massive Volume) ---")
-        
-        # MASSIVE VOLUME: 20x for NE/MAI, 10x for EN
-        repeat_count = 20 if lang_key in ["ne", "mai"] else 10
+        print(f"--- Generating {lang_key} Wake Words ---")
+        repeat_count = 30 if lang_key in ["ne", "mai"] else 15
         count = 0
         
-        gcp_voice_list = GOOGLE_VOICES.get(lang_key, [])
+        # Determine Folder
         for phrase in phrases:
-            # Determine keyword folder
-            if any(x in phrase.lower() for x in ["deepak", "दीपक", "नमस्कार"]): keyword = "deepak"
-            else: keyword = "deepa"
-
+            keyword = "deepak" if "deepak" in phrase.lower() or "दीपक" in phrase else "deepa"
             dest_dir = DATA_DIR / keyword / lang_key
             dest_dir.mkdir(parents=True, exist_ok=True)
 
-            for voice in gcp_voice_list:
-                # FULL Variations Matrix: 3 rates x 3 pitches = 9 variations per voice/phrase
-                rates = [0.85, 1.0, 1.15]
-                pitches = [-2.0, 0.0, 2.0]
-                
-                # We use ALL 9 variations to maximize signal diversity
-                for rate in rates:
-                    for pitch in pitches:
-                        for i in range(repeat_count):
-                            unique_str = f"gcp_{phrase}_{voice}_{rate}_{pitch}_{i}_{lang_key}"
-                            file_hash = get_hash(unique_str)
-                            wav_path = dest_dir / f"gcp_{file_hash}.wav"
-                            mp3_temp = str(wav_path).replace(".wav", ".mp3")
-                            
-                            # Skip if exists (idempotency)
-                            if not os.path.exists(wav_path):
-                                success = gcp_tts.generate_gcp_audio(
-                                    phrase, voice, mp3_temp, pitch=pitch, speaking_rate=rate
-                                )
-                                if success:
-                                    if convert_to_wav(mp3_temp, wav_path):
-                                        count += 1
-                                        if count % 200 == 0: print(f"GCP ({lang_key}): {count} samples generated...")
+            # A. EDGE TTS (Speed)
+            edge_voices = VOICES.get(lang_key, [])
+            if edge_voices:
+                for voice in edge_voices:
+                    for rate in ["-20%", "+0%", "+20%"]:
+                        for pitch in ["-2Hz", "+0Hz", "+2Hz"]:
+                            for i in range(max(1, repeat_count // 5)):
+                                unique_str = f"edge_{phrase}_{voice}_{rate}_{pitch}_{i}"
+                                file_hash = get_hash(unique_str)
+                                wav_path = dest_dir / f"edge_{file_hash}.wav"
+                                if not os.path.exists(wav_path):
+                                    mp3 = str(wav_path).replace(".wav", ".mp3")
+                                    if await generate_edge_speech(phrase, voice, mp3, rate, pitch):
+                                        if convert_to_wav(mp3, wav_path):
+                                            count += 1
+                                            if count % 200 == 0: print(f"{lang_key} (Edge): {count} samples...")
 
-    # 2. Generate Basic Background Noise (Synthetic)
-    print("--- Generating Synthetic Background Noise ---")
-    sr = 16000
-    duration = 1.0
-    samples = int(sr * duration)
-    
-    for i in range(500): # 500 White
-        data = np.random.normal(0, 1, samples)
-        data = (data / (np.max(np.abs(data)) + 1e-6) * 32767).astype(np.int16)
-        wav.write(BACKGROUND_DIR / f"white_{i}.wav", sr, data)
-        
-    for i in range(500): # 500 Brownian
-        data = np.cumsum(np.random.normal(0, 1, samples))
-        data = (data / (np.max(np.abs(data)) + 1e-6) * 32767).astype(np.int16)
-        wav.write(BACKGROUND_DIR / f"brown_{i}.wav", sr, data)
+            # B. GCP TTS (Fidelity)
+            if gcp_client:
+                gcp_voices = GOOGLE_VOICES.get(lang_key, [])
+                for voice in gcp_voices:
+                    for rate in [0.8, 1.0, 1.2]:
+                        for pitch in [-2.0, 0.0, 2.0]:
+                            for i in range(max(1, repeat_count // 5)):
+                                unique_str = f"gcp_{phrase}_{voice}_{rate}_{pitch}_{i}"
+                                file_hash = get_hash(unique_str)
+                                wav_path = dest_dir / f"gcp_{file_hash}.wav"
+                                if not os.path.exists(wav_path):
+                                    mp3 = str(wav_path).replace(".wav", ".mp3")
+                                    if gcp_tts.generate_gcp_audio(phrase, voice, mp3, pitch, rate):
+                                        if convert_to_wav(mp3, wav_path):
+                                            count += 1
+                                            if count % 200 == 0: print(f"{lang_key} (GCP): {count} samples...")
 
-    # 3. Generate Hard Negatives (Speech that is NOT wake word)
-    print("--- Generating Hard Negatives (Speech) ---")
-    for lang_key, sent_list in [("en", NEGATIVE_SENTENCES_EN), ("ne", NEGATIVE_SENTENCES_NE), ("mai", NEGATIVE_SENTENCES_MAI)]:
-        gcp_voices = GOOGLE_VOICES.get(lang_key, [])[:5] # Use first 5 voices
-        for sent in sent_list[:20]:
-            for voice in gcp_voices:
-                unique_str = f"neg_{sent}_{voice}"
-                file_hash = get_hash(unique_str)
-                wav_path = BACKGROUND_DIR / f"neg_{file_hash}.wav"
-                mp3_temp = str(wav_path).replace(".wav", ".mp3")
-                if not os.path.exists(wav_path):
-                    if gcp_tts.generate_gcp_audio(sent, voice, mp3_temp):
-                        convert_to_wav(mp3_temp, wav_path)
+    # 2. Generate Background
+    print("--- Generating Background Noise (White, Office, Hum, Scream) ---")
+    modes = ["white", "brown", "plane", "train", "typing", "office", "hum", "scream"]
+    for i in range(1000):
+        mode = random.choice(modes)
+        path = BACKGROUND_DIR / f"noise_{i}_{mode}.wav"
+        if os.path.exists(path): continue
+        if mode == "white": generate_white_noise(path)
+        elif mode == "brown": generate_brown_noise(path)
+        elif mode == "plane": generate_airplane_rumble(path)
+        elif mode == "train": generate_train_noise(path)
+        elif mode == "typing": generate_typing_noise(path)
+        elif mode == "office": generate_office_noise(path)
+        elif mode == "hum": generate_hum_noise(path)
+        elif mode == "scream": generate_scream_noise(path)
+        if i % 100 == 0: print(f"Background: {i} samples...")
 
-    print("\n[SUCCESS] High-Fidelity GCP-Only Dataset Ready.")
+    print("\n[SUCCESS] Custom Balanced Dataset Ready.")
 
 if __name__ == "__main__":
     asyncio.run(main())
