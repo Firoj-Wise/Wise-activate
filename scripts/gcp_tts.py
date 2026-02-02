@@ -25,7 +25,7 @@ def list_voices(language_code="en-US"):
 
 def generate_gcp_audio(text, voice_name, output_path, pitch=0.0, speaking_rate=1.0):
     """
-    Generates audio using Google Cloud TTS.
+    Generates audio using standard Google Cloud TTS.
     pitch: -20.0 to 20.0 (semitones)
     speaking_rate: 0.25 to 4.0
     """
@@ -34,9 +34,9 @@ def generate_gcp_audio(text, voice_name, output_path, pitch=0.0, speaking_rate=1
 
     synthesis_input = texttospeech.SynthesisInput(text=text)
 
-    # Build the voice request
-    # extract language code from voice name (e.g. "en-US-Wavenet-D" -> "en-US")
-    lang_code = "-".join(voice_name.split("-")[:2])
+    # Extract language code from voice name (e.g. "en-US-Wavenet-D" -> "en-US")
+    lang_parts = voice_name.split("-")
+    lang_code = "-".join(lang_parts[:2])
     
     voice = texttospeech.VoiceSelectionParams(
         language_code=lang_code,

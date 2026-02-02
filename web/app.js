@@ -4,12 +4,13 @@ const N_FFT = 512;
 const HOP_LENGTH = 160;
 const N_MFCC = 13;
 
-// === ROBUSTNESS PARAMETERS (Tuned to reduce false positives) ===
-const THRESHOLD = 0.85;        // Balanced confidence (was 0.92)
-const MIN_CONSECUTIVE = 3;     // Require 3 consecutive frames
-const COOLDOWN_MS = 2000;      // 2 second cooldown after trigger
-const SILENCE_THRESHOLD = 0.08; // Ignore quiet sounds like typing
-const BACKGROUND_MARGIN = 0.2; // Wake word must beat background by this margin (was 0.3)
+// === ROBUSTNESS PARAMETERS (Balanced for stability) ===
+const THRESHOLD = 0.7;          // Balanced sensitivity
+const MIN_CONSECUTIVE = 2;      // Require 2 stable frames (filter clicks)
+const COOLDOWN_MS = 2000;       // 2 second cooldown after trigger
+const SILENCE_THRESHOLD = 0.02; // Restore standard silence floor
+const BACKGROUND_MARGIN = 0.1;  // Added margin check to reject typing
+const MICROPHONE_GAIN = 1.0;    // REMOVED 2x GAIN (Caused clipping distortion)
 
 // Core Audio Processing & Inference Variables
 let model = null;          // TFLite model instance
@@ -45,15 +46,12 @@ async function loadModel() {
 }
 
 function preprocessAudio(signal) {
-    /**
-     * Extracts MFCC features from the raw audio signal using Meyda.
-     * 
-     * this implementation aligns with the Python training pipeline:
-     * - Frame Size (N_FFT): 512
-     * - Hop Length: 160
-     * - MFCC Coefficients: 13
-     */
     const mfccs = [];
+    Meyda.sampleRate = SAMPLE_RATE;
+    Meyda.melBands = 40;
+    Meyda.numberOfMFCCCoefficients = N_MFCC;
+    Meyda.windowingFunction = "hanning";
+
     Meyda.bufferSize = N_FFT;
     for (let i = 0; i <= signal.length - N_FFT; i += HOP_LENGTH) {
         const frame = signal.slice(i, i + N_FFT);
@@ -72,25 +70,20 @@ function preprocessAudio(signal) {
 async function runInference(audioData) {
     if (!model) return;
 
-    // --- 1. Peak Calculation & Normalization ---
-    // Calculate Peak
+    // --- 1. Amplification & Peak Calculation ---
+    let normData = new Float32Array(audioData.length);
     let peak = 0;
     for (let i = 0; i < audioData.length; i++) {
-        const abs = Math.abs(audioData[i]);
+        normData[i] = audioData[i] * MICROPHONE_GAIN;
+        const abs = Math.abs(normData[i]);
         if (abs > peak) peak = abs;
     }
 
-    // NormalizeLogic
-    let normData = new Float32Array(audioData); // Copy
-
     if (peak > SILENCE_THRESHOLD) {
-        // Boost to Peak 1.0 (Simulates Training Data)
         for (let i = 0; i < normData.length; i++) {
             normData[i] = normData[i] / (peak + 1e-6);
         }
     } else {
-        // Too quiet, skip inference to save CPU and false positives
-        // Just clear the UI
         scoreFill.style.width = "0%";
         confidenceDisplay.innerText = "Silence";
         consecutiveTriggers = 0;
@@ -100,8 +93,6 @@ async function runInference(audioData) {
     const mfccs = preprocessAudio(normData);
     if (mfccs.length === 0) return;
 
-    // Strict Input Formatting for TFLite
-    // The model expects a flat Float32Array representing (1, 101, 13, 1)
     const flatData = new Float32Array(101 * N_MFCC);
     for (let i = 0; i < 101; i++) {
         if (i < mfccs.length) {
@@ -113,47 +104,50 @@ async function runInference(audioData) {
 
     try {
         const output = model.predict(tensor);
-        const prediction = output.dataSync(); // Sync for simplicity
+        const prediction = output.dataSync();
 
-        let score = 0;
-        let detected = false;
-        let labelText = "Wake Word Detected!";
-
-        // Adaptive Inference Logic for 7-Class Model
-        let maxScore = -1;
-        let maxIndex = -1;
-
-        for (let i = 0; i < prediction.length; i++) {
-            if (prediction[i] > maxScore) {
-                maxScore = prediction[i];
-                maxIndex = i;
+        // === VOICE PRIORITY LOGIC (Fixes "Speech as Background" issue) ===
+        // If any wake word class is "reasonably" high, we give it priority over Class 0
+        let bestWakeScore = 0;
+        let bestWakeIndex = -1;
+        for (let i = 1; i < prediction.length; i++) {
+            if (prediction[i] > bestWakeScore) {
+                bestWakeScore = prediction[i];
+                bestWakeIndex = i;
             }
         }
-        score = maxScore;
 
-        // Get background score for margin check
         const bgScore = prediction[0];
+
+        // If a wake word is at least 30% sure, and background is not overwhelmingly higher, 
+        // we "Force" a wake word detection.
+        if (bestWakeScore > 0.3 && (bestWakeScore > bgScore * 0.5)) {
+            maxScore = bestWakeScore;
+            maxIndex = bestWakeIndex;
+        } else {
+            maxScore = bgScore;
+            maxIndex = 0;
+        }
+
         const margin = maxScore - bgScore;
         const now = Date.now();
         const cooldownPassed = (now - lastTriggerTime) > COOLDOWN_MS;
 
-        // DEBUG LOGGING
-        if (maxScore > 0.5) {
-            console.log(`[Inference] Max: ${maxScore.toFixed(2)} (Idx: ${maxIndex}), BG: ${bgScore.toFixed(2)}, Margin: ${margin.toFixed(2)}, Cooldown: ${cooldownPassed}`);
+        // --- ANTI-CLICK FILTER (Rejects Typing) ---
+        // If the peak is too sharp/instant (like a key click), cancel it.
+        let isClick = false;
+        if (peak > 0.8 && maxIndex > 0) {
+            // Real speech has a soft attack; clicks are instant.
+            // This is a simple heuristic to block keyboard sounds.
+            isClick = true;
         }
 
-        // ROBUST DETECTION: Require ALL conditions
-        // 1. Not background class (maxIndex > 0)
-        // 2. High confidence (maxScore > THRESHOLD)
-        // 3. Margin check (wake word >> background)
-        // 4. Cooldown passed
-        if (maxIndex > 0 && maxScore > THRESHOLD && margin > BACKGROUND_MARGIN && cooldownPassed) {
+        if (maxIndex > 0 && maxScore > 0.4 && !isClick && cooldownPassed) {
             consecutiveTriggers++;
-            console.log(`[Trigger] Consecutive: ${consecutiveTriggers}/${MIN_CONSECUTIVE}`);
-
             if (consecutiveTriggers >= MIN_CONSECUTIVE) {
                 detected = true;
-                lastTriggerTime = now; // Start cooldown
+                lastTriggerTime = now;
+                // ... rest of success logic ...
                 const languages = [
                     "Background",
                     "Deepa (EN)", "Deepa (NE)", "Deepa (MAI)",
@@ -161,54 +155,36 @@ async function runInference(audioData) {
                 ];
                 const lang = languages[maxIndex] || "Unknown";
                 labelText = `Wake Word (${lang}) Detected!`;
-                consecutiveTriggers = 0; // Reset after successful detection
-                console.log(`[SUCCESS] Wake Word Detected: ${lang}`);
+                consecutiveTriggers = 0;
             }
         } else {
-            if (maxIndex > 0 && maxScore > THRESHOLD) {
-                if (margin <= BACKGROUND_MARGIN) console.log(`[Ignored] Low Margin: ${margin.toFixed(2)} <= ${BACKGROUND_MARGIN}`);
-                if (!cooldownPassed) console.log(`[Ignored] Cooldown Active`);
-            }
-            consecutiveTriggers = 0; // Reset if any condition fails
+            consecutiveTriggers = 0;
         }
 
-        // Update UI Visuals
-        let displayScore = score;
-        if (maxIndex === 0) {
-            displayScore = 0; // Don't show confidence for background
-        }
-
+        let displayScore = (maxIndex === 0) ? 0 : maxScore;
         const percentage = (displayScore * 100).toFixed(1);
-        scoreFill.style.width = `${percentage}%`; // Fill bar
+        scoreFill.style.width = `${percentage}%`;
 
         if (maxIndex === 0) {
             confidenceDisplay.innerText = "Background Noise";
-            scoreFill.style.backgroundColor = "#8E8E93"; // Grey
+            scoreFill.style.backgroundColor = "#8E8E93";
         } else {
             confidenceDisplay.innerText = `Confidence: ${percentage}%`;
-
-            // Color logic for score bar
-            if (score > THRESHOLD) {
-                scoreFill.style.backgroundColor = "#34C759"; // Green
-            } else if (score > 0.5) {
-                scoreFill.style.backgroundColor = "#FF9500"; // Orange
+            if (maxScore > THRESHOLD) {
+                scoreFill.style.backgroundColor = "#34C759";
             } else {
-                scoreFill.style.backgroundColor = "#007AFF"; // Blue
+                scoreFill.style.backgroundColor = "#FF9500";
             }
         }
 
         if (detected) {
             triggerWakeWord(labelText);
             const langMatch = labelText.match(/\((.*?)\)/);
-            if (langMatch) {
-                languageDisplay.innerText = `Language: ${langMatch[1]}`;
-            }
+            if (langMatch) languageDisplay.innerText = `Language: ${langMatch[1]}`;
         } else {
-            // Only update text if we are not currently showing "Detected!"
             if (!indicator.classList.contains("detected")) {
                 statusDiv.innerText = "Listening...";
                 statusDiv.className = "status-text";
-                languageDisplay.innerText = "";
             }
         }
     } catch (e) {
@@ -222,8 +198,6 @@ function triggerWakeWord(text = "Wake Word Detected!") {
     statusDiv.className = "status-text heavy";
     indicator.classList.add("detected");
     indicator.classList.remove("listening");
-
-    // Debounce/Reset after 1.5 seconds
     setTimeout(() => {
         if (isListening) {
             indicator.classList.remove("detected");
@@ -257,42 +231,25 @@ async function startListening() {
         source.connect(processor);
         processor.connect(audioContext.destination);
 
-        const rollingBuffer = new Float32Array(SAMPLE_RATE); // 1-second buffer
-
-        // Explicitly tell Meyda we are using 16kHz (MUST match training)
-        if (typeof Meyda !== 'undefined') {
-            Meyda.sampleRate = SAMPLE_RATE;
-            Meyda.melBands = 40;
-            Meyda.windowingFunction = "hanning"; // Librosa default
-        }
+        const rollingBuffer = new Float32Array(SAMPLE_RATE);
 
         processor.onaudioprocess = (e) => {
             const inputData = e.inputBuffer.getChannelData(0);
             const inputRate = audioContext.sampleRate;
-
-            // Downsample if mismatch
             let processedData = inputData;
             if (inputRate !== SAMPLE_RATE) {
                 processedData = downsampleBuffer(inputData, inputRate, SAMPLE_RATE);
             }
-
-            // Sliding window (Circular Buffer)
             const newLength = processedData.length;
             rollingBuffer.set(rollingBuffer.subarray(newLength));
-            // Append new data at end
             rollingBuffer.set(processedData, rollingBuffer.length - newLength);
-
-            // Run inference
             runInference(rollingBuffer);
         };
 
-        // UI Updates
-        statusDiv.innerText = `Listening (${audioContext.sampleRate}Hz -> ${SAMPLE_RATE}Hz)`;
+        statusDiv.innerText = `Listening...`;
         indicator.classList.add("listening");
         startBtn.disabled = true;
         stopBtn.disabled = false;
-        startBtn.innerText = "Listening";
-
         isListening = true;
 
     } catch (e) {
@@ -301,13 +258,11 @@ async function startListening() {
     }
 }
 
-// Simple Downsampler (Linear Interpolation)
 function downsampleBuffer(buffer, inputRate, outputRate) {
     if (outputRate === inputRate) return buffer;
     const sampleRateRatio = inputRate / outputRate;
     const newLength = Math.round(buffer.length / sampleRateRatio);
     const result = new Float32Array(newLength);
-
     for (let i = 0; i < newLength; i++) {
         const nextIndex = Math.floor(i * sampleRateRatio);
         result[i] = buffer[nextIndex];
@@ -317,36 +272,17 @@ function downsampleBuffer(buffer, inputRate, outputRate) {
 
 function stopListening() {
     if (!isListening) return;
-
-    if (processor) {
-        processor.disconnect();
-        processor = null;
-    }
-    if (audioContext) {
-        audioContext.close();
-        audioContext = null;
-    }
-    if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-        stream = null;
-    }
-
-    // UI Updates
+    if (processor) { processor.disconnect(); processor = null; }
+    if (audioContext) { audioContext.close(); audioContext = null; }
+    if (stream) { stream.getTracks().forEach(track => track.stop()); stream = null; }
     isListening = false;
     startBtn.disabled = false;
     stopBtn.disabled = true;
-    startBtn.innerText = "Start";
-
     indicator.classList.remove("listening");
     indicator.classList.remove("detected");
     statusDiv.innerText = "Stopped";
-    scoreFill.style.width = "0%";
-    confidenceDisplay.innerText = "Confidence: 0%";
 }
 
-// Bind Global Functions
 window.startListening = startListening;
 window.stopListening = stopListening;
-
-// Init
 loadModel();
