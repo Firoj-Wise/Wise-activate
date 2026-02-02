@@ -218,8 +218,14 @@ def process_negative_file(file_path, bg_files, aug_count=10):
 
 def load_dataset():
     """
-    Loads dataset with parallel processing for speed.
-    Uses joblib to parallelize file loading across CPU cores.
+    Loads dataset with parallel processing and DYNAMIC AUGMENTATION.
+    
+    Key Fix: Classes with more samples get LESS augmentation to prevent collapse.
+    - Small classes (< 2000 samples): 10x augmentation
+    - Medium classes (2000-4000 samples): 5x augmentation  
+    - Large classes (> 4000 samples): 2x augmentation
+    
+    This ensures ~20,000 samples per class after augmentation.
     """
     X, y = [], []
     num_classes = len(CLASSES)
@@ -243,8 +249,12 @@ def load_dataset():
     n_jobs = min(8, os.cpu_count() or 4)
     print(f"Using {n_jobs} parallel workers for data loading.")
     
-    # --- LOAD POSITIVE SAMPLES (with parallelization) ---
+    # Target samples per class (for balance)
+    TARGET_SAMPLES_PER_CLASS = 20000
+    
+    # --- LOAD POSITIVE SAMPLES (with DYNAMIC augmentation) ---
     print("\nLoading positive samples (Gender + Language)...")
+    print("Using DYNAMIC augmentation to balance classes:")
     
     for (name_dir, lang_dir), idx in label_map.items():
         target_path = POSITIVE_DIR / name_dir / lang_dir
@@ -254,11 +264,28 @@ def load_dataset():
             continue
             
         files = list(target_path.glob("*.wav"))
-        print(f"Loading {len(files)} samples for Class {idx}: {CLASSES[idx]}...")
+        file_count = len(files)
+        
+        # DYNAMIC AUGMENTATION: Fewer augments for larger classes
+        if file_count < 2000:
+            aug_count = 10  # Small class - heavy augmentation
+        elif file_count < 4000:
+            aug_count = 5   # Medium class - moderate augmentation
+        else:
+            aug_count = 2   # Large class - minimal augmentation
+        
+        # Optional: Undersample very large classes
+        max_files = TARGET_SAMPLES_PER_CLASS // (aug_count + 1)
+        if file_count > max_files:
+            print(f"  Undersampling {CLASSES[idx]}: {file_count} -> {max_files} files")
+            np.random.shuffle(files)
+            files = files[:max_files]
+        
+        print(f"Class {idx} ({CLASSES[idx]}): {len(files)} files x {aug_count+1} = ~{len(files) * (aug_count+1)} samples")
         
         # Parallel processing with joblib
         results = Parallel(n_jobs=n_jobs, verbose=0)(
-            delayed(process_positive_file)(str(f), idx, bg_files, aug_count=10)
+            delayed(process_positive_file)(str(f), idx, bg_files, aug_count=aug_count)
             for f in files
         )
         
@@ -267,8 +294,6 @@ def load_dataset():
             for mfcc, label in file_results:
                 X.append(mfcc)
                 y.append(label)
-        
-        print(f"  -> Generated {len(files) * 11} samples (1 original + 10 augmented each)")
     
     # --- LOAD USER NEGATIVES (Hard Negatives) ---
     print("\nLoading USER NEGATIVES (Hard Negatives)...")
@@ -277,7 +302,7 @@ def load_dataset():
     
     if user_neg_files:
         results = Parallel(n_jobs=n_jobs, verbose=0)(
-            delayed(process_negative_file)(str(f), [], aug_count=10)
+            delayed(process_negative_file)(str(f), [], aug_count=5)
             for f in user_neg_files
         )
         
@@ -289,10 +314,17 @@ def load_dataset():
     # --- LOAD BACKGROUND NEGATIVES ---
     print("\nLoading negative samples (Background)...")
     neg_files = list(NEGATIVE_DIR.rglob("*.wav"))
-    print(f"Found {len(neg_files)} base negative samples.")
+    
+    # Undersample background if too large
+    target_bg = TARGET_SAMPLES_PER_CLASS // 3  # Less augmentation for negatives
+    if len(neg_files) > target_bg:
+        np.random.shuffle(neg_files)
+        neg_files = neg_files[:target_bg]
+    
+    print(f"Using {len(neg_files)} base negative samples.")
     
     results = Parallel(n_jobs=n_jobs, verbose=0)(
-        delayed(process_negative_file)(str(f), bg_files, aug_count=5)
+        delayed(process_negative_file)(str(f), bg_files, aug_count=2)
         for f in neg_files
     )
     
@@ -301,8 +333,16 @@ def load_dataset():
             X.append(mfcc)
             y.append(label)
     
+    # Print class distribution
+    y_arr = np.array(y)
+    print("\n=== Class Distribution ===")
+    for i, cls_name in enumerate(CLASSES):
+        count = np.sum(y_arr == i)
+        print(f"  {cls_name}: {count} samples")
+    
     print(f"\n=== Final Dataset Size: {len(X)} samples ===")
     return np.array(X), np.array(y), num_classes
+
 
 
 def build_model(input_shape, num_classes):
