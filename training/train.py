@@ -430,20 +430,14 @@ def build_model(input_shape, num_classes):
         # Aggregation
         tf.keras.layers.GlobalAveragePooling2D(name='global_avg_pool'),
         
-        # Activation
+    # Activation
         tf.keras.layers.Softmax(name='softmax')
     ])
     
-    # Learning rate schedule for better convergence
-    lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
-        initial_learning_rate=1e-3,
-        decay_steps=5000,
-        decay_rate=0.9
-    )
-    
     # Use Focal Loss to focus on hard negatives (key openWakeWord technique)
+    # Note: We use a static LR here so ReduceLROnPlateau can adjust it.
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule),
+        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
         loss=SparseFocalLoss(gamma=FOCAL_GAMMA),
         metrics=['accuracy']
     )
