@@ -5,11 +5,11 @@ const HOP_LENGTH = 160;
 const N_MFCC = 13;
 
 // === ROBUSTNESS PARAMETERS (Tuned to reduce false positives) ===
-const THRESHOLD = 0.92;        // High confidence required (was 0.85)
-const MIN_CONSECUTIVE = 3;     // Require 3 consecutive frames (was 2)
+const THRESHOLD = 0.85;        // Balanced confidence (was 0.92)
+const MIN_CONSECUTIVE = 3;     // Require 3 consecutive frames
 const COOLDOWN_MS = 2000;      // 2 second cooldown after trigger
-const SILENCE_THRESHOLD = 0.08; // Ignore quiet sounds like typing (was 0.05)
-const BACKGROUND_MARGIN = 0.3; // Wake word must beat background by this margin
+const SILENCE_THRESHOLD = 0.08; // Ignore quiet sounds like typing
+const BACKGROUND_MARGIN = 0.2; // Wake word must beat background by this margin (was 0.3)
 
 // Core Audio Processing & Inference Variables
 let model = null;          // TFLite model instance

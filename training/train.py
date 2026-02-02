@@ -23,7 +23,7 @@ from audiomentations import Compose, PitchShift, TimeStretch, AddGaussianNoise, 
 # ============================================================
 # TRAINING CONFIGURATION (Tune these!)
 # ============================================================
-FALSE_POSITIVE_PENALTY = 5.0   # How strongly to penalize background false triggers (openWakeWord uses 1500, but we use class weights)
+FALSE_POSITIVE_PENALTY = 2.0   # Reduced from 5.0: Balanced robustness vs sensitivity
 FOCAL_GAMMA = 2.0              # Focal loss gamma: higher = more focus on hard examples
 TARGET_ACCURACY = 0.95         # Stop early if we reach this
 MAX_EPOCHS = 100               # Early stopping will find optimal point
