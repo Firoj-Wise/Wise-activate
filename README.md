@@ -7,20 +7,30 @@ This project implements a robust **Wake Word Detection System** capable of disti
 
 ## System Architecture
 
-The core of the system is a **7-Class Fully Convolutional Neural Network (FCN)** that runs efficiently in the browser via TensorFlow.js / TFLite.
+The core of the system is a **7-Class Fully Convolutional Neural Network (FCN)**.
 
 ### **The 7 Classes**
-1.  **Background** (Silence, Noise, Random Speech) - *Critical for False Positive Rejection*
-2.  **Deepa (EN)** - Female, English Accent
-3.  **Deepa (NE)** - Female, Nepali Accent
-4.  **Deepa (MAI)** - Female, Maithili Accent
-5.  **Deepak (EN)** - Male, English Accent
-6.  **Deepak (NE)** - Male, Nepali Accent
-7.  **Deepak (MAI)** - Male, Maithili Accent
+1.  **Background** (Silence, Noise, Speech) - *Heavily penalized for false triggers*
+2.  **Deepa (EN)** - "Hey there Deepa"
+3.  **Deepa (NE)** - "Namaste Deepa"
+4.  **Deepa (MAI)** - "Pranam Deepa"
+5.  **Deepak (EN)** - "Hey there Deepak"
+6.  **Deepak (NE)** - "Namaste Deepak"
+7.  **Deepak (MAI)** - "Pranam Deepak"
 
 ---
 
-## The Data Pipeline (Synthetic boosting)
+## Robust Training Features (openWakeWord-Inspired)
+
+We use advanced techniques to ensure the model is **robust against false positives**:
+
+1.  **Strict Phonetic Anchors**: Model learns `[Greeting] + [Name]`. Just saying "Deepak" is treated as a negative sample.
+2.  **Focal Loss (γ=2.0)**: Forces the model to focus on "hard negatives" (background speech that sounds like the wake word).
+3.  **False Positive Penalty (5.0x)**: The loss function penalizes background false alarms **5x more** than missed detections.
+4.  **Augmentation**: Simulates real-world conditions with:
+    *   **RIR (Room Impulse Response)**: Echo/Reverb
+    *   **Noise Mixing**: Coffee shop, Rain, Traffic
+    *   **Pitch/Speed Shift**: Robustness to different speakers
 
 We faced a massive data imbalance: limited real-world recordings vs. the need for robust language detection. We solved this with a **Synthetic Boosting Strategy**.
 

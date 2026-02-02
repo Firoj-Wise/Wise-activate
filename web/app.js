@@ -137,6 +137,11 @@ async function runInference(audioData) {
         const now = Date.now();
         const cooldownPassed = (now - lastTriggerTime) > COOLDOWN_MS;
 
+        // DEBUG LOGGING
+        if (maxScore > 0.5) {
+            console.log(`[Inference] Max: ${maxScore.toFixed(2)} (Idx: ${maxIndex}), BG: ${bgScore.toFixed(2)}, Margin: ${margin.toFixed(2)}, Cooldown: ${cooldownPassed}`);
+        }
+
         // ROBUST DETECTION: Require ALL conditions
         // 1. Not background class (maxIndex > 0)
         // 2. High confidence (maxScore > THRESHOLD)
@@ -144,6 +149,7 @@ async function runInference(audioData) {
         // 4. Cooldown passed
         if (maxIndex > 0 && maxScore > THRESHOLD && margin > BACKGROUND_MARGIN && cooldownPassed) {
             consecutiveTriggers++;
+            console.log(`[Trigger] Consecutive: ${consecutiveTriggers}/${MIN_CONSECUTIVE}`);
 
             if (consecutiveTriggers >= MIN_CONSECUTIVE) {
                 detected = true;
@@ -156,23 +162,39 @@ async function runInference(audioData) {
                 const lang = languages[maxIndex] || "Unknown";
                 labelText = `Wake Word (${lang}) Detected!`;
                 consecutiveTriggers = 0; // Reset after successful detection
+                console.log(`[SUCCESS] Wake Word Detected: ${lang}`);
             }
         } else {
+            if (maxIndex > 0 && maxScore > THRESHOLD) {
+                if (margin <= BACKGROUND_MARGIN) console.log(`[Ignored] Low Margin: ${margin.toFixed(2)} <= ${BACKGROUND_MARGIN}`);
+                if (!cooldownPassed) console.log(`[Ignored] Cooldown Active`);
+            }
             consecutiveTriggers = 0; // Reset if any condition fails
         }
 
         // Update UI Visuals
-        const percentage = (score * 100).toFixed(1);
-        scoreFill.style.width = `${percentage}%`; // Fill bar
-        confidenceDisplay.innerText = `Confidence: ${percentage}%`;
+        let displayScore = score;
+        if (maxIndex === 0) {
+            displayScore = 0; // Don't show confidence for background
+        }
 
-        // Color logic for score bar
-        if (score > THRESHOLD) {
-            scoreFill.style.backgroundColor = "#34C759"; // Green
-        } else if (score > 0.5) {
-            scoreFill.style.backgroundColor = "#FF9500"; // Orange
+        const percentage = (displayScore * 100).toFixed(1);
+        scoreFill.style.width = `${percentage}%`; // Fill bar
+
+        if (maxIndex === 0) {
+            confidenceDisplay.innerText = "Background Noise";
+            scoreFill.style.backgroundColor = "#8E8E93"; // Grey
         } else {
-            scoreFill.style.backgroundColor = "#007AFF"; // Blue
+            confidenceDisplay.innerText = `Confidence: ${percentage}%`;
+
+            // Color logic for score bar
+            if (score > THRESHOLD) {
+                scoreFill.style.backgroundColor = "#34C759"; // Green
+            } else if (score > 0.5) {
+                scoreFill.style.backgroundColor = "#FF9500"; // Orange
+            } else {
+                scoreFill.style.backgroundColor = "#007AFF"; // Blue
+            }
         }
 
         if (detected) {
