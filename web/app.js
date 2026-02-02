@@ -3,8 +3,13 @@ const SAMPLE_RATE = 16000;
 const N_FFT = 512;
 const HOP_LENGTH = 160;
 const N_MFCC = 13;
-const THRESHOLD = 0.85; // Lowered from 0.96 to improve detection sensitivity
-const MIN_CONSECUTIVE = 2; // Require 2 consecutive frames to trigger
+
+// === ROBUSTNESS PARAMETERS (Tuned to reduce false positives) ===
+const THRESHOLD = 0.92;        // High confidence required (was 0.85)
+const MIN_CONSECUTIVE = 3;     // Require 3 consecutive frames (was 2)
+const COOLDOWN_MS = 2000;      // 2 second cooldown after trigger
+const SILENCE_THRESHOLD = 0.08; // Ignore quiet sounds like typing (was 0.05)
+const BACKGROUND_MARGIN = 0.3; // Wake word must beat background by this margin
 
 // Core Audio Processing & Inference Variables
 let model = null;          // TFLite model instance
@@ -13,6 +18,8 @@ let processor = null;      // ScriptProcessorNode for raw audio access
 let stream = null;         // Microphone MediaStream
 let isListening = false;   // State flag for the listening loop
 let consecutiveTriggers = 0; // Counter for stability check
+let lastTriggerTime = 0;   // Timestamp for cooldown
+
 
 // UI Elements
 const statusDiv = document.getElementById("status");
@@ -75,7 +82,6 @@ async function runInference(audioData) {
 
     // NormalizeLogic
     let normData = new Float32Array(audioData); // Copy
-    const SILENCE_THRESHOLD = 0.05; // Increased noise gate (was 0.02)
 
     if (peak > SILENCE_THRESHOLD) {
         // Boost to Peak 1.0 (Simulates Training Data)
@@ -125,12 +131,23 @@ async function runInference(audioData) {
         }
         score = maxScore;
 
-        // Index 0 is Background
-        if (maxIndex > 0 && maxScore > THRESHOLD) {
+        // Get background score for margin check
+        const bgScore = prediction[0];
+        const margin = maxScore - bgScore;
+        const now = Date.now();
+        const cooldownPassed = (now - lastTriggerTime) > COOLDOWN_MS;
+
+        // ROBUST DETECTION: Require ALL conditions
+        // 1. Not background class (maxIndex > 0)
+        // 2. High confidence (maxScore > THRESHOLD)
+        // 3. Margin check (wake word >> background)
+        // 4. Cooldown passed
+        if (maxIndex > 0 && maxScore > THRESHOLD && margin > BACKGROUND_MARGIN && cooldownPassed) {
             consecutiveTriggers++;
 
             if (consecutiveTriggers >= MIN_CONSECUTIVE) {
                 detected = true;
+                lastTriggerTime = now; // Start cooldown
                 const languages = [
                     "Background",
                     "Deepa (EN)", "Deepa (NE)", "Deepa (MAI)",
@@ -138,9 +155,10 @@ async function runInference(audioData) {
                 ];
                 const lang = languages[maxIndex] || "Unknown";
                 labelText = `Wake Word (${lang}) Detected!`;
+                consecutiveTriggers = 0; // Reset after successful detection
             }
         } else {
-            consecutiveTriggers = 0; // Reset if we drop below threshold
+            consecutiveTriggers = 0; // Reset if any condition fails
         }
 
         // Update UI Visuals

@@ -78,8 +78,8 @@ async def main():
     for lang, phrases in PHRASES.items():
         print(f"--- Generating {lang} samples ---")
         
-        # OVERSAMPLING STRATEGY:
-        repeat_count = 5 if lang in ["ne", "mai"] else 1
+        # No oversampling needed - train.py handles augmentation with Focal Loss
+        repeat_count = 1
         print(f"   -> Oversampling Factor: {repeat_count}x")
         
         count = 0

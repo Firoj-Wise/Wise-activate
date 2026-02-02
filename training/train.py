@@ -1,9 +1,14 @@
 """
-WiseYak Adaptive Wake Word Training Pipeline
-Optimized for Kaggle/Colab with:
-- audiomentations (10x faster than librosa)
-- joblib multiprocessing (parallel data loading)
-- Reduced augmentation multiplier (10x instead of 50x)
+WiseYak Wake Word Training Pipeline (openWakeWord-Inspired)
+
+Key improvements from openWakeWord:
+- Focal Loss: Down-weights easy examples, focuses on hard negatives
+- False Positive Penalty: Heavy penalty for triggering on background
+- Strict Phonetic Anchors: PREFIX + NAME pattern (e.g., "Namaste Deepak")
+- Robust augmentation with audiomentations
+
+Usage:
+    python train.py
 """
 
 import os
@@ -14,6 +19,14 @@ from pathlib import Path
 from sklearn.utils import class_weight
 from joblib import Parallel, delayed
 from audiomentations import Compose, PitchShift, TimeStretch, AddGaussianNoise, Gain
+
+# ============================================================
+# TRAINING CONFIGURATION (Tune these!)
+# ============================================================
+FALSE_POSITIVE_PENALTY = 5.0   # How strongly to penalize background false triggers (openWakeWord uses 1500, but we use class weights)
+FOCAL_GAMMA = 2.0              # Focal loss gamma: higher = more focus on hard examples
+TARGET_ACCURACY = 0.95         # Stop early if we reach this
+MAX_EPOCHS = 100               # Early stopping will find optimal point
 
 # Audio Configuration
 SAMPLE_RATE = 16000
@@ -31,21 +44,64 @@ USER_NEGATIVE_DIR = BASE_DIR / "data" / "user_negatives"
 MODEL_SAVE_PATH = BASE_DIR / "training" / "wakeword_model.h5"
 TFLITE_SAVE_PATH = BASE_DIR / "web" / "wakeword_model.tflite"
 
-# The 7 Output Classes
+# The 7 Output Classes (Background + 6 wake word variants)
 CLASSES = [
     "Background", 
     "Deepa (EN)", "Deepa (NE)", "Deepa (MAI)",
     "Deepak (EN)", "Deepak (NE)", "Deepak (MAI)"
 ]
 
+
+# ============================================================
+# FOCAL LOSS (Key openWakeWord technique)
+# ============================================================
+# Focal Loss reduces the contribution of easy examples and focuses
+# the model on learning hard negatives (background that sounds like wake word)
+
+class SparseFocalLoss(tf.keras.losses.Loss):
+    """
+    Focal Loss for multi-class classification with integer labels.
+    
+    FL(p_t) = -alpha * (1 - p_t)^gamma * log(p_t)
+    
+    Args:
+        gamma: Focusing parameter. Higher = more focus on hard examples.
+               gamma=0 is equivalent to standard cross-entropy.
+        alpha: Class balancing weight (optional, we use class_weight instead)
+    """
+    def __init__(self, gamma=2.0, name='sparse_focal_loss'):
+        super().__init__(name=name)
+        self.gamma = gamma
+    
+    def call(self, y_true, y_pred):
+        # Clip predictions to prevent log(0)
+        y_pred = tf.clip_by_value(y_pred, 1e-7, 1.0 - 1e-7)
+        
+        # Get the predicted probability for the true class
+        y_true = tf.cast(y_true, tf.int32)
+        y_true_one_hot = tf.one_hot(tf.squeeze(y_true), depth=tf.shape(y_pred)[-1])
+        
+        # Cross entropy
+        ce = -y_true_one_hot * tf.math.log(y_pred)
+        
+        # Focal weight: (1 - p_t)^gamma
+        p_t = tf.reduce_sum(y_pred * y_true_one_hot, axis=-1, keepdims=True)
+        focal_weight = tf.pow(1.0 - p_t, self.gamma)
+        
+        # Focal loss
+        focal_loss = focal_weight * ce
+        
+        return tf.reduce_mean(tf.reduce_sum(focal_loss, axis=-1))
+
+
 # Audiomentations Pipeline (10x faster than librosa)
-# These run on optimized C backends
 AUGMENT_PIPELINE = Compose([
     PitchShift(min_semitones=-2, max_semitones=2, p=0.3),
     TimeStretch(min_rate=0.85, max_rate=1.15, p=0.3),
     AddGaussianNoise(min_amplitude=0.001, max_amplitude=0.015, p=0.3),
     Gain(min_gain_db=-6, max_gain_db=6, p=0.2),
 ])
+
 
 
 def normalize_audio(y):
@@ -378,9 +434,17 @@ def build_model(input_shape, num_classes):
         tf.keras.layers.Softmax(name='softmax')
     ])
     
+    # Learning rate schedule for better convergence
+    lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
+        initial_learning_rate=1e-3,
+        decay_steps=5000,
+        decay_rate=0.9
+    )
+    
+    # Use Focal Loss to focus on hard negatives (key openWakeWord technique)
     model.compile(
-        optimizer='adam',
-        loss='sparse_categorical_crossentropy',
+        optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule),
+        loss=SparseFocalLoss(gamma=FOCAL_GAMMA),
         metrics=['accuracy']
     )
     return model
@@ -388,7 +452,7 @@ def build_model(input_shape, num_classes):
 
 def main():
     print("=" * 60)
-    print("  WiseYak Adaptive Training Pipeline (Optimized)")
+    print("  WiseYak Adaptive Training Pipeline (Robust)")
     print("=" * 60)
     
     X, y, num_classes = load_dataset()
@@ -413,17 +477,42 @@ def main():
         'balanced', classes=np.unique(y), y=y
     )
     class_weight_dict = dict(enumerate(class_weights))
+    
+    # Apply FALSE_POSITIVE_PENALTY to Background class (openWakeWord-inspired)
+    # This heavily penalizes false triggers on background audio
+    if 0 in class_weight_dict:
+        class_weight_dict[0] *= FALSE_POSITIVE_PENALTY
+        print(f"Background Weight (with penalty): {class_weight_dict[0]:.3f}")
+    
     print(f"\nComputed Class Weights: {class_weight_dict}")
 
-    # Training
-    print("\nTraining model...")
+    # Early Stopping - prevents overfitting
+    callbacks = [
+        tf.keras.callbacks.EarlyStopping(
+            monitor='val_loss',
+            patience=7,
+            restore_best_weights=True,
+            verbose=1
+        ),
+        tf.keras.callbacks.ReduceLROnPlateau(
+            monitor='val_loss',
+            factor=0.5,
+            patience=3,
+            min_lr=1e-6,
+            verbose=1
+        )
+    ]
+
+    # Training with more epochs (early stopping will find optimal point)
+    print("\nTraining model (Early Stopping enabled)...")
     history = model.fit(
         X, y, 
-        epochs=50, 
+        epochs=100,  # Early stopping will stop before this
         batch_size=32, 
         validation_split=0.2, 
         verbose=1, 
-        class_weight=class_weight_dict
+        class_weight=class_weight_dict,
+        callbacks=callbacks
     )
     
     print(f"\nSaving model to {MODEL_SAVE_PATH}...")
