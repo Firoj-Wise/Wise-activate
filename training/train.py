@@ -25,7 +25,7 @@ from audiomentations import Compose, PitchShift, TimeStretch, AddGaussianNoise, 
 FALSE_POSITIVE_PENALTY = 2.0   # Bias against false triggers
 FOCAL_GAMMA = 2.0              # Focus on hard examples
 MAX_EPOCHS = 100
-TARGET_SAMPLES_PER_CLASS = 100000 # Massive volume
+TARGET_SAMPLES_PER_CLASS = 50000 # Massive volume
 
 # Audio Constants
 SAMPLE_RATE = 16000
