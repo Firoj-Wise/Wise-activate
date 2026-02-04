@@ -8,6 +8,7 @@ Key Features:
 """
 
 import os
+# import tensorflowjs as tfjs
 import random
 import numpy as np
 import librosa
@@ -41,6 +42,7 @@ NEGATIVE_DIR = BASE_DIR / "data" / "background"
 USER_NEGATIVE_DIR = BASE_DIR / "data" / "user_negatives"
 MODEL_SAVE_PATH = BASE_DIR / "training" / "wakeword_model.h5"
 TFLITE_SAVE_PATH = BASE_DIR / "web" / "wakeword_model.tflite"
+# TFJS_SAVE_DIR = BASE_DIR / "web" / "tfjs_model" 
 
 CLASSES = [
     "Background", 
@@ -240,12 +242,19 @@ def main():
         callbacks=callbacks
     )
 
-    # Conversion
+    # 1. Export TFLite
     print("\nExporting TFLite...")
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
+    tflite_model = converter.convert()
     with open(TFLITE_SAVE_PATH, "wb") as f:
-        f.write(converter.convert())
-    print("Done.")
+        f.write(tflite_model)
+    print(f"Saved TFLite model to: {TFLITE_SAVE_PATH}")
+
+    # # 2. Export TensorFlow.js (Graph Model)
+    # print("\nExporting TensorFlow.js Model...")
+    # # Requires: pip install tensorflowjs
+    # tfjs.converters.save_keras_model(model, TFJS_SAVE_DIR)
+    # print(f"Saved TFJS model to: {TFJS_SAVE_DIR}")
 
 if __name__ == "__main__":
     main()

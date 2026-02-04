@@ -1,8 +1,8 @@
 tensorflow
-numpy>=1.26.0
-librosa>=0.10.1
-numba>=0.60.0
-llvmlite>=0.43.0
+numpy
+librosa
+numba
+llvmlite
 soundfile
 pydub
 sounddevice
@@ -12,6 +12,7 @@ edge-tts
 google-cloud-texttospeech
 grpcio
 # Optimized augmentation (10x faster than librosa)
-audiomentations>=0.33.0
+audiomentations
 # Parallel processing
 joblib
+

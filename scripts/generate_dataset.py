@@ -7,7 +7,8 @@ import scipy.io.wavfile as wav
 import edge_tts
 from pydub import AudioSegment
 from pathlib import Path
-from phrases import PHRASES, VOICES
+# Import negative sentences to generate speech for the "Background" class
+from phrases import PHRASES, VOICES, NEGATIVE_SENTENCES_EN, NEGATIVE_SENTENCES_NE, NEGATIVE_SENTENCES_MAI
 import gcp_tts
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -138,22 +139,22 @@ def generate_scream_noise(path, duration=1.0, sr=16000):
     wav.write(path, sr, data)
 
 async def main():
-    print("🚀 Starting HEAVY Hybrid Generation (Edge + GCP) + Negative vocalizations...")
+    print("🚀 Starting HEAVY Hybrid Generation (Edge + GCP) + Negative Speech...")
     gcp_client = gcp_tts.get_gcp_client()
 
-    # 1. Generate Wake Words
+    # 1. Generate Wake Words (Positives)
     for lang_key, phrases in PHRASES.items():
         print(f"--- Generating {lang_key} Wake Words ---")
         repeat_count = 30 if lang_key in ["ne", "mai"] else 15
         count = 0
         
-        # Determine Folder
         for phrase in phrases:
+            # Route to correct folder (Deepak vs Deepa)
             keyword = "deepak" if "deepak" in phrase.lower() or "दीपक" in phrase else "deepa"
             dest_dir = DATA_DIR / keyword / lang_key
             dest_dir.mkdir(parents=True, exist_ok=True)
 
-            # A. EDGE TTS (Speed)
+            # A. EDGE TTS
             edge_voices = VOICES.get(lang_key, [])
             if edge_voices:
                 for voice in edge_voices:
@@ -170,7 +171,7 @@ async def main():
                                             count += 1
                                             if count % 200 == 0: print(f"{lang_key} (Edge): {count} samples...")
 
-            # B. GCP TTS (Fidelity)
+            # B. GCP TTS
             if gcp_client:
                 gcp_voices = GOOGLE_VOICES.get(lang_key, [])
                 for voice in gcp_voices:
@@ -187,7 +188,43 @@ async def main():
                                             count += 1
                                             if count % 200 == 0: print(f"{lang_key} (GCP): {count} samples...")
 
-    # 2. Generate Background
+    # 2. Generate Negative Speech (CRITICAL FIX: Teach model what speech is NOT a wakeword)
+    print("--- Generating Negative Speech (Conversational & Tricky phrases) ---")
+    neg_map = {
+        "en": NEGATIVE_SENTENCES_EN, 
+        "ne": NEGATIVE_SENTENCES_NE, 
+        "mai": NEGATIVE_SENTENCES_MAI
+    }
+    
+    # Store these in 'background' because they are negative samples (Class 0)
+    neg_dir = BACKGROUND_DIR / "negative_speech"
+    neg_dir.mkdir(parents=True, exist_ok=True)
+    
+    count_neg = 0
+    for lang, sentences in neg_map.items():
+        voices = VOICES.get(lang, [])
+        if not voices: continue
+        
+        for phrase in sentences:
+            for voice in voices:
+                # Generate variations to bulk up the negative speech dataset
+                for i in range(5): 
+                    unique_str = f"neg_{lang}_{phrase}_{voice}_{i}"
+                    file_hash = get_hash(unique_str)
+                    wav_path = neg_dir / f"neg_{file_hash}.wav"
+                    
+                    if not os.path.exists(wav_path):
+                        mp3 = str(wav_path).replace(".wav", ".mp3")
+                        # Vary speed slightly for naturalness
+                        rate = random.choice(["-10%", "+0%", "+10%"])
+                        if await generate_edge_speech(phrase, voice, mp3, rate=rate):
+                            if convert_to_wav(mp3, wav_path):
+                                count_neg += 1
+                                if count_neg % 50 == 0: print(f"Negative Speech: {count_neg} samples...")
+    
+    print(f"Total Negative Speech Generated: {count_neg}")
+
+    # 3. Generate Background Noise
     print("--- Generating Background Noise (White, Office, Hum, Scream) ---")
     modes = ["white", "brown", "plane", "train", "typing", "office", "hum", "scream"]
     for i in range(1000):

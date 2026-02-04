@@ -1,0 +1,23 @@
+[project]
+name = "wise-activate"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "audiomentations>=0.43.1",
+    "edge-tts>=7.2.7",
+    "google-cloud-texttospeech>=2.34.0",
+    "grpcio>=1.76.0",
+    "joblib>=1.5.3",
+    "librosa>=0.11.0",
+    "llvmlite>=0.46.0",
+    "matplotlib>=3.10.8",
+    "numba>=0.63.1",
+    "numpy>=2.3.5",
+    "pydub>=0.25.1",
+    "seaborn>=0.13.2",
+    "sounddevice>=0.5.5",
+    "soundfile>=0.13.1",
+    "tensorflow>=2.20.0",
+]

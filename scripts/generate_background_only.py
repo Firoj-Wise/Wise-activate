@@ -83,12 +83,24 @@ async def main():
     rates = ["-25%", "+0%", "+25%"]
     pitches = ["-15Hz", "+0Hz", "+15Hz"]
     
+    # SAFETY: Explicitly forbidden substrings
+    FORBIDDEN_SUBSTRINGS = ["deepa", "deepak", "दीपक", "दीपा"]
+
     for sent_list, lang_code in neg_tasks:
         print(f"Processing {lang_code} negatives...")
         edge_voices = VOICES[lang_code]
         gcp_voice_list = GOOGLE_VOICES.get(lang_code, []) if gcp_client else []
         
         for sent in sent_list:
+            
+            # --- STRICT SAFETY CHECK ---
+            # If the sentence contains the wake word, SKIP IT.
+            sent_lower = sent.lower()
+            if any(bad in sent_lower for bad in FORBIDDEN_SUBSTRINGS):
+                print(f"🚨 SKIPPING FORBIDDEN PHRASE: '{sent}'")
+                continue
+            # ---------------------------
+
             selected_edge_voices = edge_voices 
             
             for voice in selected_edge_voices:
