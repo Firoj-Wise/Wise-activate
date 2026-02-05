@@ -5,11 +5,11 @@ const HOP_LENGTH = 160;
 const N_MFCC = 13;
 
 // === ROBUSTNESS PARAMETERS (Balanced for stability) ===
-const THRESHOLD = 0.85;         // Higher threshold for smoothed scores
-const SMOOTHING_WINDOW = 3;     // Moving average over 3 frames (approx 300ms)
+const THRESHOLD = 0.85;         
+const SMOOTHING_WINDOW = 3;     
 const COOLDOWN_MS = 2000;       
-const SILENCE_THRESHOLD = 0.02; 
-const MICROPHONE_GAIN = 1.0;  
+const SILENCE_THRESHOLD = 0.001; // Drastically lowered threshold
+const MICROPHONE_GAIN = 5.0;     // Significant software boost
 
 // Core Audio Processing & Inference Variables
 let model = null;          
@@ -20,11 +20,61 @@ let isListening = false;
 let lastTriggerTime = 0;   
 let scoreHistory = [];     // Buffer for smoothing
 
-// ... (UI Elements)
+// UI Elements
+const statusDiv = document.getElementById("status");
+const startBtn = document.getElementById("startBtn");
+const stopBtn = document.getElementById("stopBtn");
+const indicator = document.getElementById("indicator");
+const scoreFill = document.getElementById("scoreFill");
+const confidenceDisplay = document.getElementById("confidenceDisplay");
+const languageDisplay = document.getElementById("languageDisplay");
 
-// ... (loadModel function)
+async function loadModel() {
+    statusDiv.innerText = "Loading Model...";
+    try {
+        tflite.setWasmPath('tflite/');
+        model = await tflite.loadTFLiteModel(MODEL_PATH);
+        
+        // Warmup: Run one fake inference to initialize TFLite WASM backend
+        try {
+            const dummyInput = tf.zeros([1, 101, N_MFCC, 1]);
+            model.predict(dummyInput);
+            dummyInput.dispose();
+            console.log("Model warmup complete");
+        } catch (warmupError) {
+            console.warn("Model warmup skipped:", warmupError);
+        }
 
-// ... (preprocessAudio function)
+        statusDiv.innerText = "Ready to Listen";
+        startBtn.disabled = false;
+        console.log("Model loaded successfully");
+    } catch (e) {
+        statusDiv.innerText = "Error Loading Model";
+        console.error(e);
+    }
+}
+
+function preprocessAudio(signal) {
+    const mfccs = [];
+    Meyda.sampleRate = SAMPLE_RATE;
+    Meyda.melBands = 40;
+    Meyda.numberOfMFCCCoefficients = N_MFCC;
+    Meyda.windowingFunction = "hanning";
+
+    Meyda.bufferSize = N_FFT;
+    for (let i = 0; i <= signal.length - N_FFT; i += HOP_LENGTH) {
+        const frame = signal.slice(i, i + N_FFT);
+        try {
+            const features = Meyda.extract('mfcc', frame);
+            if (features && features.length === N_MFCC) {
+                mfccs.push(features);
+            }
+        } catch (e) {
+            console.error("Meyda error", e);
+        }
+    }
+    return mfccs;
+}
 
 async function runInference(audioData) {
     if (!model) return;
@@ -43,8 +93,8 @@ async function runInference(audioData) {
             normData[i] = normData[i] / (peak + 1e-6);
         }
     } else {
-        scoreFill.style.width = "0%";
-        confidenceDisplay.innerText = "Silence";
+        scoreFill.style.width = "1%";
+        confidenceDisplay.innerText = `Silence (Input: ${peak.toFixed(4)})`; 
         scoreHistory = []; // Reset history on silence
         return;
     }

@@ -61,3 +61,6 @@ env/
 venv/
 data/
 gcp_key.json
+
+
+data_sequence/

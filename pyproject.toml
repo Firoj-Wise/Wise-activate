@@ -20,4 +20,5 @@ dependencies = [
     "sounddevice>=0.5.5",
     "soundfile>=0.13.1",
     "tensorflow>=2.20.0",
+    "tqdm>=4.67.3",
 ]
