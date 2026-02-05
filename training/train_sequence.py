@@ -251,6 +251,10 @@ def main():
     )
 
     print("\nExporting TFLite...")
+    # SAVE KERAS MODEL FIRST
+    model.save(MODEL_SAVE_PATH)
+    print(f"Saved Keras model to: {MODEL_SAVE_PATH}")
+
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
     tflite_model = converter.convert()
     with open(TFLITE_SAVE_PATH, "wb") as f:
