@@ -5,67 +5,26 @@ const HOP_LENGTH = 160;
 const N_MFCC = 13;
 
 // === ROBUSTNESS PARAMETERS (Balanced for stability) ===
-const THRESHOLD = 0.7;          // Balanced sensitivity
-const MIN_CONSECUTIVE = 2;      // Require 2 stable frames (filter clicks)
-const COOLDOWN_MS = 2000;       // 2 second cooldown after trigger
-const SILENCE_THRESHOLD = 0.02; // Restore standard silence floor
-const BACKGROUND_MARGIN = 0.1;  // Added margin check to reject typing
-const MICROPHONE_GAIN = 1.0;    // REMOVED 2x GAIN (Caused clipping distortion)
+const THRESHOLD = 0.85;         // Higher threshold for smoothed scores
+const SMOOTHING_WINDOW = 3;     // Moving average over 3 frames (approx 300ms)
+const COOLDOWN_MS = 2000;       
+const SILENCE_THRESHOLD = 0.02; 
+const MICROPHONE_GAIN = 1.0;  
 
 // Core Audio Processing & Inference Variables
-let model = null;          // TFLite model instance
-let audioContext = null;   // Web Audio API Context
-let processor = null;      // ScriptProcessorNode for raw audio access
-let stream = null;         // Microphone MediaStream
-let isListening = false;   // State flag for the listening loop
-let consecutiveTriggers = 0; // Counter for stability check
-let lastTriggerTime = 0;   // Timestamp for cooldown
+let model = null;          
+let audioContext = null;   
+let processor = null;      
+let stream = null;         
+let isListening = false;   
+let lastTriggerTime = 0;   
+let scoreHistory = [];     // Buffer for smoothing
 
+// ... (UI Elements)
 
-// UI Elements
-const statusDiv = document.getElementById("status");
-const startBtn = document.getElementById("startBtn");
-const stopBtn = document.getElementById("stopBtn");
-const indicator = document.getElementById("indicator");
-const scoreFill = document.getElementById("scoreFill");
-const confidenceDisplay = document.getElementById("confidenceDisplay");
-const languageDisplay = document.getElementById("languageDisplay");
+// ... (loadModel function)
 
-async function loadModel() {
-    statusDiv.innerText = "Loading Model...";
-    try {
-        tflite.setWasmPath('tflite/');
-        model = await tflite.loadTFLiteModel(MODEL_PATH);
-        statusDiv.innerText = "Ready to Listen";
-        startBtn.disabled = false;
-        console.log("Model loaded successfully");
-    } catch (e) {
-        statusDiv.innerText = "Error Loading Model";
-        console.error(e);
-    }
-}
-
-function preprocessAudio(signal) {
-    const mfccs = [];
-    Meyda.sampleRate = SAMPLE_RATE;
-    Meyda.melBands = 40;
-    Meyda.numberOfMFCCCoefficients = N_MFCC;
-    Meyda.windowingFunction = "hanning";
-
-    Meyda.bufferSize = N_FFT;
-    for (let i = 0; i <= signal.length - N_FFT; i += HOP_LENGTH) {
-        const frame = signal.slice(i, i + N_FFT);
-        try {
-            const features = Meyda.extract('mfcc', frame);
-            if (features && features.length === N_MFCC) {
-                mfccs.push(features);
-            }
-        } catch (e) {
-            console.error("Meyda error", e);
-        }
-    }
-    return mfccs;
-}
+// ... (preprocessAudio function)
 
 async function runInference(audioData) {
     if (!model) return;
@@ -86,7 +45,7 @@ async function runInference(audioData) {
     } else {
         scoreFill.style.width = "0%";
         confidenceDisplay.innerText = "Silence";
-        consecutiveTriggers = 0;
+        scoreHistory = []; // Reset history on silence
         return;
     }
 
@@ -99,6 +58,76 @@ async function runInference(audioData) {
             flatData.set(mfccs[i], i * N_MFCC);
         }
     }
+
+    // --- 2. TFLite Inference ---
+    const inputTensor = tflite.getInputs()[0];
+    const inputBuffer = tflite.getInputTensor(inputTensor).data;
+    inputBuffer.set(flatData);
+
+    tflite.run();
+
+    const outputTensor = tflite.getOutputs()[0];
+    const outputBuffer = tflite.getOutputTensor(outputTensor).data;
+    const scores = Array.from(outputBuffer);
+
+    // --- 3. Robust Smoothing (Moving Average) ---
+    // Add current scores to history
+    scoreHistory.push(scores);
+    if (scoreHistory.length > SMOOTHING_WINDOW) scoreHistory.shift();
+
+    // Calculate average scores
+    const avgScores = new Float32Array(scores.length).fill(0);
+    for (let h = 0; h < scoreHistory.length; h++) {
+        for (let s = 0; s < scores.length; s++) {
+            avgScores[s] += scoreHistory[h][s];
+        }
+    }
+    for (let s = 0; s < scores.length; s++) {
+        avgScores[s] /= scoreHistory.length;
+    }
+
+    // Find best class
+    let maxScore = 0;
+    let maxIndex = 0;
+    for (let i = 0; i < avgScores.length; i++) {
+        if (avgScores[i] > maxScore) {
+            maxScore = avgScores[i];
+            maxIndex = i;
+        }
+    }
+
+    // --- 4. Activation Logic ---
+    const CLASSES = [
+        "Background", 
+        "Deepa (EN)", "Deepa (NE)", "Deepa (MAI)",
+        "Deepak (EN)", "Deepak (NE)", "Deepak (MAI)"
+    ];
+    
+    // Ignore Background (Index 0)
+    const label = CLASSES[maxIndex];
+    const isWakeWord = maxIndex > 0;
+
+    // UI Update
+    const width = Math.min(100, maxScore * 100);
+    scoreFill.style.width = width + "%";
+    
+    if (isWakeWord) {
+        confidenceDisplay.innerText = `${label} (${(maxScore * 100).toFixed(1)}%)`;
+        scoreFill.style.backgroundColor = maxScore > THRESHOLD ? "#4CAF50" : "#ff9800";
+    } else {
+        confidenceDisplay.innerText = "Background";
+        scoreFill.style.backgroundColor = "#ccc";
+    }
+
+    // Trigger
+    const now = Date.now();
+    if (isWakeWord && maxScore > THRESHOLD && (now - lastTriggerTime > COOLDOWN_MS)) {
+        lastTriggerTime = now;
+        triggerActivation(label);
+        scoreHistory = []; // Reset history after trigger
+    }
+}
+
 
     const tensor = tf.tensor(flatData, [1, 101, N_MFCC, 1], 'float32');
 
@@ -191,7 +220,6 @@ async function runInference(audioData) {
         console.error("Inference Error:", e);
     }
     tensor.dispose();
-}
 
 function triggerWakeWord(text = "Wake Word Detected!") {
     statusDiv.innerText = text;

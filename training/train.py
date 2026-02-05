@@ -96,6 +96,28 @@ def load_audio(file_path):
 # PROCESSING PIPELINE
 # ============================================================
 
+def spec_augment(spec: np.ndarray, num_mask=2, freq_masking_max_percentage=0.15, time_masking_max_percentage=0.25):
+    """
+    Applied SpecAugment (Frequency and Time Masking) to the MFCC/Spectrogram.
+    spec shape: (time_steps, n_mfcc)
+    """
+    spec = spec.copy() # Avoid modifying original
+    time_steps, n_freq = spec.shape
+    
+    # 1. Frequency Masking
+    for _ in range(num_mask):
+        f = int(np.random.uniform(0, freq_masking_max_percentage) * n_freq)
+        f0 = random.randint(0, n_freq - f)
+        spec[:, f0:f0 + f] = 0
+
+    # 2. Time Masking
+    for _ in range(num_mask):
+        t = int(np.random.uniform(0, time_masking_max_percentage) * time_steps)
+        t0 = random.randint(0, time_steps - t)
+        spec[t0:t0 + t, :] = 0
+        
+    return spec
+
 def process_file_with_aug(file_path, label, target_count, bg_files):
     """Loads a file and generates multiple augmented versions to hit target_count."""
     results = []
@@ -103,23 +125,74 @@ def process_file_with_aug(file_path, label, target_count, bg_files):
     if y is None: return []
 
     # Calculate how many augmentations per file
-    # If target_count is 100k and we have 1000 files, we need 100 per file.
     for _ in range(target_count):
-        # Apply augmentation
+        # 1. Waveform Augmentation (Pitch, Time, Noise)
         y_aug = AUGMENT_PIPELINE(samples=y, sample_rate=SAMPLE_RATE)
         
-        # Randomly mix with background (20% chance)
-        if bg_files and random.random() < 0.2:
+        # 2. Background Mixing
+        if bg_files and random.random() < 0.4: # Increased generic noise probability
             try:
                 bg = load_audio(random.choice(bg_files))
                 if bg is not None:
-                    y_aug = y_aug + (bg * random.uniform(0.1, 0.4))
+                    # Random volume for background
+                    y_aug = y_aug + (bg * random.uniform(0.05, 0.5))
             except: pass
-            
-        results.append((extract_mfcc(y_aug), label))
+        
+        # 3. Feature Extraction
+        mfcc = extract_mfcc(y_aug)
+        
+        # 4. SpecAugment (Feature level masking)
+        # Apply 50% of the time to keep some clean samples
+        if random.random() < 0.5:
+            mfcc = spec_augment(mfcc)
+
+        results.append((mfcc, label))
     return results
 
-def load_stratified_dataset():
+def build_model(input_shape, num_classes):
+    """
+    DS-CNN (Depthwise Separable CNN) Architecture.
+    Standard for Keyword Spotting on Edge Devices.
+    """
+    inputs = tf.keras.layers.Input(shape=input_shape)
+    
+    # Initial Conv to expand features
+    x = tf.keras.layers.Reshape(target_shape=(input_shape[0], input_shape[1], 1))(inputs)
+    x = tf.keras.layers.Conv2D(64, (10, 4), strides=(2, 2), padding='same', use_bias=False)(x)
+    x = tf.keras.layers.BatchNormalization()(x)
+    x = tf.keras.layers.ReLU()(x)
+    x = tf.keras.layers.Dropout(0.2)(x)
+    
+    # DS-CNN Blocks
+    # Seperates learning "spatial" correlations from "cross-channel" correlations
+    for kernel_size, dilation in [(3, 1), (3, 1), (3, 2), (3, 2)]:
+        # Depthwise
+        x = tf.keras.layers.DepthwiseConv2D(
+            kernel_size=(kernel_size, kernel_size), 
+            padding='same', 
+            dilation_rate=(dilation, 1),
+            use_bias=False
+        )(x)
+        x = tf.keras.layers.BatchNormalization()(x)
+        x = tf.keras.layers.ReLU()(x)
+        
+        # Pointwise
+        x = tf.keras.layers.Conv2D(64, (1, 1), padding='same', use_bias=False)(x)
+        x = tf.keras.layers.BatchNormalization()(x)
+        x = tf.keras.layers.ReLU()(x)
+        x = tf.keras.layers.Dropout(0.2)(x)
+
+    x = tf.keras.layers.GlobalAveragePooling2D()(x)
+    outputs = tf.keras.layers.Dense(num_classes, activation='softmax')(x)
+    
+    model = tf.keras.Model(inputs=inputs, outputs=outputs)
+    
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=0.005), # Slightly higher LR for DS-CNN
+        loss=SparseFocalLoss(gamma=FOCAL_GAMMA),
+        metrics=['accuracy']
+    )
+    return model
     """
     1. Indexes all files.
     2. Splits them into Train/Val sets (No Leakage).
@@ -187,29 +260,10 @@ def load_stratified_dataset():
     return (np.array(X_train_all), np.array(y_train_all), 
             np.array(X_val_all), np.array(y_val_all))
 
-def build_model(input_shape, num_classes):
-    model = tf.keras.Sequential([
-        tf.keras.layers.Input(shape=input_shape),
-        tf.keras.layers.Conv2D(32, (3, 3), activation='relu', padding='same'),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.MaxPool2D((2, 2)),
-        tf.keras.layers.Conv2D(64, (3, 3), activation='relu', padding='same'),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.MaxPool2D((1, 2)),
-        tf.keras.layers.Conv2D(64, (3, 3), activation='relu', padding='same'),
-        tf.keras.layers.Dropout(0.3),
-        tf.keras.layers.Conv2D(64, (1, 1), activation='relu'),
-        tf.keras.layers.Dropout(0.5),
-        tf.keras.layers.Conv2D(num_classes, (1, 1), activation='linear'),
-        tf.keras.layers.GlobalAveragePooling2D(),
-        tf.keras.layers.Softmax()
-    ])
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
-        loss=SparseFocalLoss(gamma=FOCAL_GAMMA),
-        metrics=['accuracy']
-    )
-    return model
+# Replaced by DS-CNN above
+# def build_model(input_shape, num_classes):
+# ...
+
 
 def main():
     X_train, y_train, X_val, y_val = load_stratified_dataset()
