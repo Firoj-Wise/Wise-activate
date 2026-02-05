@@ -36,7 +36,29 @@ N_FFT = 512
 HOP_LENGTH = 160
 
 # Paths
-BASE_DIR = Path(__file__).resolve().parent.parent
+# Robustly find BASE_DIR (Project Root)
+CURRENT_FILE = Path(__file__).resolve()
+BASE_DIR = CURRENT_FILE.parent.parent
+
+# automatic path correction for nested environments (e.g. Colab)
+if not (BASE_DIR / "data").exists():
+    print(f"DEBUG: 'data' folder not found at {BASE_DIR / 'data'}")
+    # Try searching up the tree
+    found = False
+    for parent in CURRENT_FILE.parents:
+        if (parent / "data").exists():
+            BASE_DIR = parent
+            print(f"DEBUG: Found 'data' folder at {BASE_DIR / 'data'}")
+            found = True
+            break
+    
+    if not found:
+        # Try current working directory
+        cwd = Path(os.getcwd())
+        if (cwd / "data").exists():
+            BASE_DIR = cwd
+            print(f"DEBUG: Found 'data' folder in CWD: {BASE_DIR / 'data'}")
+
 POSITIVE_DIR = BASE_DIR / "data" / "wake"
 NEGATIVE_DIR = BASE_DIR / "data" / "background"
 USER_NEGATIVE_DIR = BASE_DIR / "data" / "user_negatives"
