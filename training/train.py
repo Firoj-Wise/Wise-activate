@@ -193,6 +193,8 @@ def build_model(input_shape, num_classes):
         metrics=['accuracy']
     )
     return model
+
+def load_stratified_dataset():
     """
     1. Indexes all files.
     2. Splits them into Train/Val sets (No Leakage).
