@@ -222,11 +222,23 @@ def load_stratified_dataset():
     X_val_all, y_val_all = [], []
 
     print("\n--- Stratified Split & Leak-Free Loading ---")
+    print(f"Searching for data in: {BASE_DIR}")
+    
     n_jobs = min(8, os.cpu_count() or 4)
 
+    total_files = 0
     for idx in range(7):
         files = file_registry[idx]
-        if not files: continue
+        total_files += len(files)
+        if not files: 
+            if idx == 0:
+                print(f"Warning: No background files found in {NEGATIVE_DIR}")
+            else:
+                # Try to print which key failed
+                lbl = [k for k, v in label_map.items() if v == idx]
+                path = POSITIVE_DIR / lbl[0][0] / lbl[0][1] if lbl else "Unknown"
+                print(f"Warning: No files found for Class {idx} ({CLASSES[idx]}) at {path}")
+            continue
 
         # Stratified Split (80/20)
         train_files, val_files = train_test_split(files, test_size=0.2, random_state=42)
@@ -238,26 +250,31 @@ def load_stratified_dataset():
 
         # 1. Load Training Data (with massive augmentation)
         # Each file will be augmented (TARGET_SAMPLES / train_count) times.
-        aug_per_file = max(1, TARGET_SAMPLES_PER_CLASS // train_count)
-        
-        results = Parallel(n_jobs=n_jobs)(
-            delayed(process_file_with_aug)(f, idx, aug_per_file, file_registry[0])
-            for f in train_files
-        )
-        for res_list in results:
-            for mfcc, label in res_list:
-                X_train_all.append(mfcc)
-                y_train_all.append(label)
+        if train_count > 0:
+            aug_per_file = max(1, TARGET_SAMPLES_PER_CLASS // train_count)
+            
+            results = Parallel(n_jobs=n_jobs)(
+                delayed(process_file_with_aug)(f, idx, aug_per_file, file_registry[0])
+                for f in train_files
+            )
+            for res_list in results:
+                for mfcc, label in res_list:
+                    X_train_all.append(mfcc)
+                    y_train_all.append(label)
 
         # 2. Load Validation Data (NO augmentation, pure test)
-        results_val = Parallel(n_jobs=n_jobs)(
-            delayed(process_file_with_aug)(f, idx, 1, []) # 1x, no bg mixing for pure val
-            for f in val_files
-        )
-        for res_list in results_val:
-            for mfcc, label in res_list:
-                X_val_all.append(mfcc)
-                y_val_all.append(label)
+        if val_count > 0:
+            results_val = Parallel(n_jobs=n_jobs)(
+                delayed(process_file_with_aug)(f, idx, 1, []) # 1x, no bg mixing for pure val
+                for f in val_files
+            )
+            for res_list in results_val:
+                for mfcc, label in res_list:
+                    X_val_all.append(mfcc)
+                    y_val_all.append(label)
+
+    if total_files == 0:
+        raise ValueError(f"No audio files found! Check data paths.\nBase: {BASE_DIR}\nPositive: {POSITIVE_DIR}\nNegative: {NEGATIVE_DIR}")
 
     return (np.array(X_train_all), np.array(y_train_all), 
             np.array(X_val_all), np.array(y_val_all))
