@@ -1,0 +1,93 @@
+# ============================================================
+# openWakeWord Training Configuration
+# MIXED MODEL: "Hello Deepa" (EN) + "Namaste Deepa" (NE) 
+# Output: hello_namaste_deepa.onnx
+# ============================================================
+
+model_name: "hello_namaste_deepa"
+
+target_phrase:
+  - "hello deepa"
+  - "namaste deepa"
+
+# Adversarial negatives — phonetically confusing phrases.
+custom_negative_phrases:
+  # --- Deepa-like confusers ---
+  - "depend"
+  - "depot"
+  - "dipper"
+  - "dipika"
+  - "deeksha"
+  - "epoch"
+  # --- Hello-like confusers ---
+  - "fellow"
+  - "yellow"
+  - "jello"
+  - "below"
+  - "elbow"
+  # --- Namaste-like confusers ---
+  - "stay"
+  - "nasty"
+  - "master"
+  - "musty"
+  - "misty"
+  # --- Similar names (must NOT trigger) ---
+  - "dilip"
+  - "dinesh"
+  - "dipendra"
+  - "ram"
+  - "sita"
+  - "hari"
+  - "shyam"
+  - "priya"
+  - "gita"
+  - "mira"
+  # --- Near-miss phrases ---
+  - "hello dear"
+  - "hello didi"
+  - "hello diva"
+  - "namaste dear"
+  - "namaste didi"
+  - "namaste dada"
+  - "namaste ji"
+  - "hello everyone"
+  - "namaste everyone"
+
+n_samples: 50000
+n_samples_val: 5000
+tts_batch_size: 50
+augmentation_batch_size: 16
+
+piper_sample_generator_path: "/kaggle/working/piper-sample-generator"
+output_dir: "/kaggle/working/my_custom_model"
+
+rir_paths:
+  - "/kaggle/working/mit_rirs"
+
+background_paths:
+  - "/kaggle/working/audioset_16k"
+  - "/kaggle/working/fma"
+background_paths_duplication_rate:
+  - 1
+
+false_positive_validation_data_path: "/kaggle/input/wake-word/validation_set_features.npy"
+
+feature_data_files:
+  ACAV100M_sample: "/kaggle/input/acav100m-2000-16bit/openwakeword_features_ACAV100M_2000_hrs_16bit.npy"
+
+augmentation_rounds: 1
+
+model_type: "dnn"
+layer_size: 32
+
+batch_n_per_class:
+  ACAV100M_sample: 4096
+  adversarial_negative: 50
+  positive: 50
+
+steps: 50000
+max_negative_weight: 5
+target_false_positives_per_hour: 0.2
+
+target_accuracy: 0.7
+target_recall: 0.5

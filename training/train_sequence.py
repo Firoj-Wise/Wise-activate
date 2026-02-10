@@ -12,14 +12,17 @@ from pathlib import Path
 from sklearn.utils import class_weight
 from sklearn.model_selection import train_test_split
 from joblib import Parallel, delayed
-from audiomentations import Compose, PitchShift, TimeStretch, AddGaussianNoise, Gain
+from audiomentations import Compose, PitchShift, TimeStretch, AddGaussianNoise, Gain, LowPassFilter, HighPassFilter, BandPassFilter
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore', category=FutureWarning)
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 FALSE_POSITIVE_PENALTY = 2.0
 FOCAL_GAMMA = 2.0
-MAX_EPOCHS = 100
+MAX_EPOCHS = 1
 TARGET_SAMPLES_PER_CLASS = 15000 # Lower than main because we have cleaner data
 
 SAMPLE_RATE = 16000
@@ -73,7 +76,10 @@ AUGMENT_PIPELINE = Compose([
     PitchShift(min_semitones=-2, max_semitones=2, p=0.4),
     TimeStretch(min_rate=0.8, max_rate=1.2, p=0.4),
     AddGaussianNoise(min_amplitude=0.001, max_amplitude=0.015, p=0.3),
-    Gain(min_gain_db=-6, max_gain_db=6, p=0.3),
+    Gain(min_gain_db=-15, max_gain_db=6, p=0.4), # Widened for distance simulation
+    # Frequency/Distance Simulations
+    LowPassFilter(min_cutoff_freq=150, max_cutoff_freq=7500, p=0.2),
+    HighPassFilter(min_cutoff_freq=20, max_cutoff_freq=2000, p=0.2),
 ])
 
 def extract_mfcc(y):
@@ -110,7 +116,12 @@ def process_file_with_aug(file_path, label, target_count, bg_files):
     if y is None: return []
 
     for _ in range(target_count):
-        y_aug = AUGMENT_PIPELINE(samples=y, sample_rate=SAMPLE_RATE)
+        # Augment
+        try:
+            y_aug = AUGMENT_PIPELINE(samples=y, sample_rate=SAMPLE_RATE)
+        except:
+            y_aug = y # Fallback if augmentation fails
+
         if bg_files and random.random() < 0.4:
             try:
                 bg = load_audio(random.choice(bg_files))
@@ -143,7 +154,7 @@ def load_dataset():
             print(f"Index {name}: {len(file_registry[idx])} files")
 
     # Index Negatives
-    file_registry[0] = [str(f) for f in NEGATIVE_DIR.rglob("*.wav")]
+    file_registry[0] = [str(f) for f in NEGATIVE_DIR.rglob("*") if f.suffix in ['.wav', '.mp3']]
     print(f"Index Background: {len(file_registry[0])} files")
 
     if sum(len(v) for v in file_registry.values()) == 0:
@@ -256,10 +267,12 @@ def main():
     print(f"Saved Keras model to: {MODEL_SAVE_PATH}")
 
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
+    converter.optimizations = [tf.lite.Optimize.DEFAULT] # Enforce quantization/optimization for size
     tflite_model = converter.convert()
     with open(TFLITE_SAVE_PATH, "wb") as f:
         f.write(tflite_model)
     print(f"Saved TFLite model to: {TFLITE_SAVE_PATH}")
+    print(f"Model Size: {len(tflite_model) / 1024:.2f} KB (Limit: 100 KB)")
 
 if __name__ == "__main__":
     main()
