@@ -1,18 +1,14 @@
-tensorflow
+openwakeword
+onnxruntime
+sounddevice
 numpy
 librosa
-numba
-llvmlite
 soundfile
 pydub
-sounddevice
-matplotlib
-seaborn
 edge-tts
 google-cloud-texttospeech
-grpcio
-# Optimized augmentation (10x faster than librosa)
 audiomentations
-# Parallel processing
 joblib
-
+scikit-learn
+tqdm
+requests

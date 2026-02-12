@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Wake Word Detector - Namaste</title>
+
+  <!-- ONNX Runtime -->
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.1/dist/ort.min.js"></script>
+
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      background: #f4f4f5;
+      padding: 30px;
+    }
+    .card {
+      max-width: 420px;
+      margin: auto;
+      background: white;
+      padding: 20px;
+      border-radius: 14px;
+      box-shadow: 0 10px 25px rgba(0,0,0,.08);
+    }
+    h2 {
+      margin-bottom: 8px;
+    }
+    .config {
+      background: #fafafa;
+      padding: 12px;
+      border-radius: 10px;
+      font-size: 14px;
+      margin-bottom: 12px;
+    }
+    button {
+      width: 100%;
+      padding: 12px;
+      margin-top: 10px;
+      font-weight: 600;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .primary { background: #3b82f6; color: white; }
+    .secondary { background: #8b5cf6; color: white; }
+    .status {
+      margin: 12px 0;
+      padding: 10px;
+      background: #f1f5f9;
+      border-radius: 8px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+      margin-top: 16px;
+    }
+    .box {
+      padding: 12px;
+      text-align: center;
+      border-radius: 8px;
+    }
+    .blue { background: #eff6ff; }
+    .green { background: #ecfdf5; }
+    .big {
+      font-size: 28px;
+      font-weight: bold;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="card">
+    <h2>Wake Word Detector</h2>
+
+    <!-- ===== CONSTANTS DISPLAY ===== -->
+    <div class="config">
+      <div><strong>Model Threshold:</strong> <span id="probValue"></span></div>
+      <div><strong>Model 1:</strong> <span id="model1Path"></span></div>
+      <div><strong>Model 2:</strong> <span id="model2Path"></span></div>
+    </div>
+
+    <!-- Mode Button -->
+    <button id="modeBtn" class="secondary">Switch to Dual Mode</button>
+
+    <div id="status" class="status">Initializing…</div>
+
+    <button id="listenBtn" class="primary" disabled>Start Listening</button>
+
+    <div class="grid">
+      <!-- Box 1: Mapped to Namaste Deepa -->
+      <div class="box blue">
+        <div>Namaste Deepa</div>
+        <div id="count1" class="big">0</div>
+      </div>
+      <!-- Box 2: Future Hello Deepa -->
+      <div class="box green" id="box2">
+        <div>Hello Deepa</div>
+        <div id="count2" class="big">0</div>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* =======================
+   CONSTANTS
+======================= */
+const MODEL_PROB_THRESHOLD = 0.8;
+
+// Adjusted for current model
+const MODEL_1_PATH = './namaste_deepa.onnx';
+const MODEL_2_PATH = './hello_deepa.onnx'; 
+
+/* =======================
+   UI CONSTANT DISPLAY
+======================= */
+document.getElementById('probValue').textContent = MODEL_PROB_THRESHOLD;
+document.getElementById('model1Path').textContent = MODEL_1_PATH;
+document.getElementById('model2Path').textContent = MODEL_2_PATH;
+
+/* =======================
+   AUDIO WORKLET
+======================= */
+const AUDIO_PROCESSOR_CODE = `
+class AudioProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.bufferSize = 4096;
+    this.buffer = new Float32Array(this.bufferSize);
+    this.index = 0;
+  }
+
+  process(inputs) {
+    const input = inputs[0];
+    if (!input || !input[0]) return true;
+
+    for (const sample of input[0]) {
+      this.buffer[this.index++] = sample;
+      if (this.index >= this.bufferSize) {
+        this.port.postMessage(this.buffer.slice());
+        this.index = 0;
+      }
+    }
+    return true;
+  }
+}
+registerProcessor('audio-processor', AudioProcessor);
+`;
+
+/* =======================
+   STATE
+======================= */
+let isListening = false;
+let useDualMode = false; // Start in single mode
+
+let session1 = null;
+let session2 = null;
+
+let audioContext = null;
+let workletNode = null;
+let stream = null;
+
+let buffer1 = new Float32Array(0);
+let buffer2 = new Float32Array(0);
+
+let count1 = 0;
+let count2 = 0;
+
+/* =======================
+   HELPERS
+======================= */
+function setStatus(text) {
+  document.getElementById('status').textContent = text;
+}
+
+/* =======================
+   MODEL LOADING
+======================= */
+async function loadModels() {
+  setStatus('Loading models…');
+
+  ort.env.wasm.wasmPaths =
+    'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.1/dist/';
+  ort.env.wasm.numThreads = 1;
+
+  try {
+    session1 = await ort.InferenceSession.create(MODEL_1_PATH);
+  } catch (e) {
+    if (!useDualMode && !session1) { // Only critical if single mode
+         setStatus('Error loading Model 1: ' + e.message);
+         console.error(e);
+         return;
+    }
+  }
+
+  if (useDualMode) {
+    try {
+        session2 = await ort.InferenceSession.create(MODEL_2_PATH);
+    } catch (e) {
+        console.warn('Model 2 missing (Hello Deepa)', e);
+        setStatus("Warning: Model 2 missing");
+        // Proceeding anyway
+    }
+  } else {
+    session2 = null;
+  }
+
+  setStatus('Ready');
+  document.getElementById('listenBtn').disabled = false;
+}
+
+/* =======================
+   AUDIO START / STOP
+======================= */
+async function startListening() {
+  stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+  audioContext = new AudioContext({ sampleRate: 16000 });
+  await audioContext.audioWorklet.addModule(
+    URL.createObjectURL(new Blob([AUDIO_PROCESSOR_CODE], { type: 'application/javascript' }))
+  );
+
+  const source = audioContext.createMediaStreamSource(stream);
+  workletNode = new AudioWorkletNode(audioContext, 'audio-processor');
+
+  workletNode.port.onmessage = e => processAudio(e.data);
+
+  source.connect(workletNode);
+  isListening = true;
+  setStatus('Listening');
+}
+
+function stopListening() {
+  stream?.getTracks().forEach(t => t.stop());
+  audioContext?.close();
+
+  buffer1 = new Float32Array(0);
+  buffer2 = new Float32Array(0);
+
+  isListening = false;
+  setStatus('Stopped');
+}
+
+/* =======================
+   AUDIO → MODEL
+======================= */
+async function processAudio(audio) {
+  if (useDualMode && session2) {
+    await runModel(audio, session1, 24, 96, 1); // Namaste (24 frames)
+    await runModel(audio, session2, 24, 96, 2); // Hello (24 frames)
+  } else {
+    // Single mode: Namaste
+    await runModel(audio, session1, 24, 96, 1);
+  }
+}
+
+async function runModel(audio, session, frames, bins, id) {
+  const expectedSize = frames * bins;
+  let buf = id === 1 ? buffer1 : buffer2;
+
+  const combined = new Float32Array(buf.length + audio.length);
+  combined.set(buf);
+  combined.set(audio, buf.length);
+
+  if (combined.length < expectedSize) {
+    if (id === 1) buffer1 = combined;
+    else buffer2 = combined;
+    return;
+  }
+
+  const input = combined.slice(0, expectedSize);
+  if (id === 1) buffer1 = combined.slice(expectedSize);
+  else buffer2 = combined.slice(expectedSize);
+  
+  if (!session) return;
+
+  try {
+      const tensor = new ort.Tensor('float32', input, [1, frames, bins]);
+      const output = await session.run({ [session.inputNames[0]]: tensor });
+      const prob = output[session.outputNames[0]].data[0];
+
+      if (prob >= MODEL_PROB_THRESHOLD) {
+        if (id === 1) {
+          count1++;
+          document.getElementById('count1').textContent = count1;
+          setStatus('Namaste Deepa detected 🎤');
+        } else {
+          count2++;
+          document.getElementById('count2').textContent = count2;
+          setStatus('Hello Deepa detected 🎤');
+        }
+
+        setTimeout(() => setStatus('Listening'), 1500);
+      }
+  } catch (e) {
+      console.error(e);
+      // Don't stop on single inference errors, but log
+  }
+}
+
+/* =======================
+   UI EVENTS
+======================= */
+document.getElementById('listenBtn').onclick = () => {
+  if (isListening) {
+    stopListening();
+    document.getElementById('listenBtn').textContent = 'Start Listening';
+  } else {
+    startListening();
+    document.getElementById('listenBtn').textContent = 'Stop Listening';
+  }
+};
+
+document.getElementById('modeBtn').onclick = async () => {
+  if (isListening) stopListening();
+
+  useDualMode = !useDualMode;
+  document.getElementById('box2').style.display = useDualMode ? 'block' : 'none';
+  document.getElementById('modeBtn').textContent =
+    useDualMode ? 'Switch to Single Mode' : 'Switch to Dual Mode';
+
+  count1 = count2 = 0;
+  document.getElementById('count1').textContent = '0';
+  document.getElementById('count2').textContent = '0';
+
+  await loadModels();
+};
+
+/* =======================
+   INIT
+======================= */
+document.getElementById('box2').style.display = 'none';
+loadModels();
+</script>
+</body>
+</html>

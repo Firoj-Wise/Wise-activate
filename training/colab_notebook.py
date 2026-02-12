@@ -27,8 +27,8 @@ WORK = Path("/content")
 DRIVE_DATA = Path("/content/drive/MyDrive/wise-activate/data")
 
 deps = [
-    "piper-tts==1.2.0", 
-    "piper-phonemize-cross==0.1.0", 
+    # "piper-tts==1.2.0",  <-- Removed from here, installed below with --no-deps
+    "piper-phonemize-cross==1.2.0", 
     "webrtcvad==2.0.10",
     "mutagen==1.47.0", 
     "torchinfo==1.8.0", 
@@ -53,6 +53,11 @@ deps = [
 
 print("Installing pinned dependencies...")
 subprocess.run([sys.executable, "-m", "pip", "install", "-q"] + deps, check=False)
+
+# Install piper-tts WITHOUT dependencies (avoids broken piper-phonemize~=1.1.0)
+print("Installing piper-tts (no-deps)...")
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "piper-tts", "--no-deps"], check=False)
+
 print("Dependencies installed successfully.")
 
 # %%
@@ -74,8 +79,10 @@ if not piper_model.exists():
 if not (WORK / "openwakeword").exists():
     os.system(f"git clone https://github.com/dscripka/openwakeword {WORK / 'openwakeword'}")
 
-# Install openWakeWord
-os.system(f"pip install -q -e {WORK / 'openwakeword'} --no-deps")
+# Install openWakeWord (MUST happen after Cell 1 deps are installed,
+# otherwise 'import openwakeword' fails on missing onnxruntime)
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e",
+                str(WORK / 'openwakeword'), "--no-deps"], check=False)
 
 # Download resource models
 res_dir = WORK / "openwakeword" / "openwakeword" / "resources" / "models"

@@ -46,11 +46,22 @@ logging.basicConfig(
 )
 
 # ---------------------------------------------------------------------------
-# Constants
+# Path & Environment Auto-Detection
 # ---------------------------------------------------------------------------
-KAGGLE_WORKING   = Path("/kaggle/working")
-OWW_REPO         = KAGGLE_WORKING / "openwakeword"
-PIPER_REPO       = KAGGLE_WORKING / "piper-sample-generator"
+def detect_working_dir():
+    """Detect the best working directory based on environment."""
+    # 1. Kaggle
+    if os.path.exists("/kaggle/working"):
+        return Path("/kaggle/working")
+    # 2. Colab (content is standard)
+    if os.path.exists("/content"):
+        return Path("/content")
+    # 3. Local (Current Directory or Parent)
+    return Path(os.getcwd())
+
+WORKING_DIR = detect_working_dir()
+OWW_REPO    = WORKING_DIR / "openwakeword"
+PIPER_REPO  = WORKING_DIR / "piper-sample-generator"
 PIPER_MODEL_NAME = "en_US-libritts_r-medium.pt"
 
 OWW_RESOURCE_MODELS = [
@@ -85,7 +96,17 @@ def setup_environment():
 
     # --- openWakeWord ---
     if not OWW_REPO.exists():
-        run(f"git clone https://github.com/dscripka/openwakeword {OWW_REPO}")
+        # Check if we are local and it's already in the same parent dir
+        local_candidate = Path(os.getcwd()).parent / "openwakeword"
+        if local_candidate.exists():
+            logging.info(f"Found local OWW at {local_candidate}, linking...")
+            # On windows we might need to copy or just use it
+            shutil.copytree(local_candidate, OWW_REPO)
+        else:
+            run(f"git clone https://github.com/dscripka/openwakeword {OWW_REPO}")
+    
+    # Install OWW
+    # Use pip install -e . if we are inside the OWW repo, else use the path
     run(f"pip install -e {OWW_REPO} --no-deps", check=False)
 
     # Resource models

@@ -1,33 +1,53 @@
-# WiseYak "Deepak/Deepa" Wake Word Engine
-**Adaptive, Multi-Language Wake Word Detection (English, Nepali, Maithili)**
+# WiseYak Wake Word Engine
 
-This project implements a robust **Wake Word Detection System** capable of distinguishing not just the keyword ("Deepak" or "Deepa"), but also the **Language** (English / Nepali / Maithili) and **Gender** based on phonetics and accent.
+**Architecture:** openWakeWord adaptation for "Namaste Deepa" / "Hello Deepa".
+**Stack:** Python (Training/Verification), ONNX Runtime (Web Inference).
 
----
+## 1. Data Generation Strategy
 
-## System Architecture
+We don't rely on massive collected datasets. We synthesize them.
 
-The core of the system is a **7-Class Fully Convolutional Neural Network (FCN)**.
+*   **Positive Samples**: Generated using Piper TTS (high quality), Edge-TTS, and Google Cloud TTS. We permute specific phrases ("Namaste Deepa", "Hello Deepa") across different speeds, pitches, and speaker embeddings.
+*   **Negative Samples**:
+    *   **Hard Negatives**: Adversarial generation using phonetically similar words ("Deepak", "Deep", "Namaskar").
+    *   **Background Noise**: Mixed with MUSAN and custom noise datasets to ensure robustness.
+*   **Augmentation**: RIR (Room Impulse Response) simulation for reverberation and additive gaussian noise during training hardens the model against real-world acoustics.
 
-### **The 7 Classes**
-1.  **Background** (Silence, Noise, Speech) - *Heavily penalized for false triggers*
-2.  **Deepa (EN)** - "Hey there Deepa"
-3.  **Deepa (NE)** - "Namaste Deepa"
-4.  **Deepa (MAI)** - "Pranam Deepa"
-5.  **Deepak (EN)** - "Hey there Deepak"
-6.  **Deepak (NE)** - "Namaste Deepak"
-7.  **Deepak (MAI)** - "Pranam Deepak"
+## 2. Training Pipeline
 
----
+Training is handled by `training/train_oww.py`.
 
-## Robust Training Features (openWakeWord-Inspired)
+1.  **Feature Extraction**: Audio is converted to melspectrograms.
+2.  **Embedding**: We use a pre-trained microwakeword embedding model (96-dimensional vectors). This is the "secret sauce" - we only train the final classification head, not the whole stack.
+3.  **Classification**: A small fully-connected network takes the 96-dim embeddings history and outputs a probability.
 
-We use advanced techniques to ensure the model is **robust against false positives**:
+## 3. Inference Pipeline
 
-1.  **Strict Phonetic Anchors**: Model learns `[Greeting] + [Name]`. Just saying "Deepak" is treated as a negative sample.
-2.  **Focal Loss (γ=2.0)**: Forces the model to focus on "hard negatives" (background speech that sounds like the wake word).
-3.  **False Positive Penalty (5.0x)**: The loss function penalizes background false alarms **5x more** than missed detections.
-4.  **Augmentation**: Simulates real-world conditions with:
+### Python (`wise_ui_test/test_local_onnx.py`)
+This is the reference implementation. It works perfectly because:
+*   `openwakeword` library handles the streaming buffer (windowing) automatically.
+*   `sounddevice` provides clean raw PCM audio.
+*   Input is naturally 16-bit PCM, matching the model's training data.
+
+### Web / JavaScript (`wise_ui_test/test_pipeline_browser.html`)
+The browser implementation is tricky. We manually reconstruct the Python logic in JS:
+*   **AudioWorklet**: Browser audio is Float32 (44.1/48kHz). We must downsample to 16kHz and cast to Int16 without introducing aliasing artifacts.
+*   **ONNX Chaining**: We execute 3 models sequentially per chunk: `Mel` -> `Embedding` -> `Classifier`.
+*   **Latency**: If Javascript garbage collection kicks in or the main thread blocks, we lose audio frames. The Python GIL doesn't have this specific real-time contention issue in the same way.
+
+## 4. Usage
+
+**Requirements**
+`pip install -r requirements.txt`
+
+**Run Verification (Python)**
+`python wise_ui_test/test_local_onnx.py`
+
+**Train New Model**
+`python training/train_oww.py --config training/oww_configs/deepak.yaml`
+
+**Web Deployment**
+Host `wise_ui_test/` on a secure server (HTTPS). Ensure `melspectrogram.onnx` and `embedding_model.onnx` are in the root directory alongside your custom model.
     *   **RIR (Room Impulse Response)**: Echo/Reverb
     *   **Noise Mixing**: Coffee shop, Rain, Traffic
     *   **Pitch/Speed Shift**: Robustness to different speakers

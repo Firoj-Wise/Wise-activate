@@ -1,78 +1,55 @@
 # Simplified Wake Phrases for Wake Word Detection
 # 
-# Names: Deepak (Male), Deepa (Female)
+# Names: Deepa (Female)
 
 PHRASES = {
-    # ENGLISH: Diverse spellings to capture different intonations
+    # ENGLISH
     "en": [
-        "Hey Deepak", "Hey Deepa",
-        "Hay Deepak", "Hay Deepa",
-        "Haey Deepak", "Haey Deepa",
-        "Hie Deepak", "Hie Deepa",
-        "Heh Deepak", "Heh Deepa",
-        "Deepak", "Deepa" # Names alone for robustness
+        "Hello Deepa"
     ],
     
-    # NEPALI: Heavy variations to capture diverse Nepali accents/stress
+    # NEPALI
     "ne": [
-        "Namaste Deepak", "Namaste Deepa",
-        "Namastay Deepak", "Namastay Deepa",
-        "Nuh-must-ay Deepak", "Nuh-must-ay Deepa",
-        "Namastey Deepak", "Namastey Deepa",
-        "Namaskar Deepak", "Namaskar Deepa",
-        "नमस्ते दीपक", "नमस्ते दीपा",
-        "नमस्कार दीपक", "नमस्कार दीपा",
-        "दीपक", "दीपा"
-    ],
-    
-    # MAITHILI: Heavy variations for pronunciation diversity
-    "mai": [
-        "Pranam Deepak", "Pranam Deepa",
-        "Pranaam Deepak", "Pranaam Deepa",
-        "Pra-naam Deepak", "Pra-naam Deepa",
-        "Prainam Deepak", "Prainam Deepa",
-        "Pranam", "Pranaam",
-        "प्रणाम दीपक", "प्रणाम दीपा",
-        "दीपक", "दीपा"
+        "नमस्ते दीपा"
     ]
 }
 
 # Voices for TTS generation
 VOICES = {
     "en": ["en-US-AriaNeural", "en-US-GuyNeural", "en-IN-NeerjaNeural", "en-IN-PrabhatNeural"],
-    "ne": ["ne-NP-HemkalaNeural", "ne-NP-SagarNeural", "hi-IN-SwaraNeural", "hi-IN-MadhurNeural"],
-    "mai": ["hi-IN-SwaraNeural", "hi-IN-MadhurNeural", "en-IN-NeerjaNeural"]
+    "ne": ["ne-NP-HemkalaNeural", "ne-NP-SagarNeural", "hi-IN-SwaraNeural", "hi-IN-MadhurNeural"]
 }
 
 # ============================================================
 # HARD NEGATIVE SENTENCES
 # ============================================================
-# These are designed to teach the model what is NOT a wake word.
-
 NEGATIVE_SENTENCES_EN = [
     # === Phonetically similar words ===
     "The water is deep.", "Go deeper.", "Deep end.",
     "Depart now.", "Department store.", "Depend on me.",
-    "Six pack.", "Backpack.", "The park is open.",
+    "Deport the file.", "The depot is closed.",
+    "Dipper.", "Dipika.", "Deeksha.", "Epoch.",
+    "Halo.", "Pillow.", "Fellow.", "Yellow.",
+    "Jelly.", "Belly.", "Jello.", "Below.",
     
     # === Common conversation ===
     "How are you?", "I'm going to work.", "See you later.",
     "Good morning.", "Thank you.", "Have a nice day.",
-    "Turn on the lights.", "Play music.", "Stop."
+    "Turn on the lights.", "Play music.", "Stop.",
+    "Hello dear.", "Hello everyone.", "Namaste."
 ]
 
 NEGATIVE_SENTENCES_NE = [
     # === Similar names ===
-    "दिलिप", "दिनेश", "दिपेन्द्र",
+    "दिलिप", "दिनेश", "दिपेन्द्र", "दीपक", "दीप", "दीपावली",
     
     # === Random Nepali ===
     "बत्ती बाल्नुहोस्", "गीत बजाउनुस्", 
     "खाना खानुभयो?", "घर जान्छु",
-    "मलाई थाहा छैन", "भोलि भेटौला"
+    "भोलि भेटौला", "नमस्कार", "नमस्ते साथी", "दीदी"
 ]
 
-NEGATIVE_SENTENCES_MAI = [
-    # === Random Maithili ===
-    "हम घर जा रहल छी", "खाना खा लेलहुँ?",
-    "आजुक दिन नीक अछि", "राति भ गेल"
-]
+NEG_MAP = {
+    "en": NEGATIVE_SENTENCES_EN,
+    "ne": NEGATIVE_SENTENCES_NE
+}

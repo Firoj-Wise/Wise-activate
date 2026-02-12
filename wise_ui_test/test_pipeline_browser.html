@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Wake Word Detector (Full Pipeline)</title>
+  <!-- ONNX Runtime Web -->
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.1/dist/ort.min.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #f4f4f5; padding: 20px; }
+    .card { max-width: 500px; margin: auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+    .status { padding: 10px; margin: 10px 0; background: #e0f2fe; border-radius: 6px; text-align: center; }
+    .detected { background: #dcfce7; color: #166534; font-weight: bold; transform: scale(1.02); transition: 0.2s; }
+    button { width: 100%; padding: 12px; border: none; border-radius: 6px; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 20px; }
+    .box { padding: 20px; border: 2px solid #e5e7eb; border-radius: 8px; text-align: center; }
+    .score { font-size: 24px; font-weight: bold; margin-top: 5px; color: #374151; }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <h2>🎙️ Wake Word Detector (Full Pipeline)</h2>
+  <div class="status" id="status">Loading libraries...</div>
+  <button id="btn" disabled onclick="toggleListening()">Start Listening</button>
+
+  <div class="grid">
+    <div class="box" id="box1">
+      <div>Namaste Deepa</div>
+      <div class="score" id="score1">0%</div>
+    </div>
+    <div class="box" id="box2">
+      <div>Hello Deepa</div>
+      <div class="score" id="score2">0%</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// --- CONFIGURATION ---
+// We need 3 models: 
+// 1. Mel Spectrogram (Audio -> Mel)
+// 2. Embedding (Mel -> Embeddings)
+// 3. Classifier (Embeddings -> Probability)
+
+const MODELS = {
+  mel:   './melspectrogram.onnx',
+  embed: './embedding_model.onnx',
+  cls1:  './namaste_hello_deepa.onnx',
+  cls2:  './hello_deepa.onnx'  // Optional
+};
+
+const THRESHOLD = 0.5;
+let isListening = false;
+let audioCtx, worklet, source;
+let sessions = {};
+
+// Helper: Update UI status
+const setStatus = (msg) => document.getElementById('status').textContent = msg;
+
+// --- 1. INITIALIZATION ---
+async function init() {
+  try {
+    setStatus("Loading ONNX models...");
+    
+    // Set threading to 1 to avoid excessive CPU usage
+    ort.env.wasm.numThreads = 1;
+    
+    // Explicitly point to the WASM file location on CDN to avoid loading issues
+    ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.1/dist/';
+
+    // Load pipeline models
+    sessions.mel = await ort.InferenceSession.create(MODELS.mel);
+    sessions.embed = await ort.InferenceSession.create(MODELS.embed);
+    
+    // Load classifier models
+    sessions.cls1 = await ort.InferenceSession.create(MODELS.cls1);
+    
+    // Check if Model 2 exists before trying to load (Prevents Red 404 in Console)
+    try {
+        const response = await fetch(MODELS.cls2, { method: 'HEAD' });
+        if (response.ok) {
+            sessions.cls2 = await ort.InferenceSession.create(MODELS.cls2);
+            document.getElementById('box2').style.opacity = '1';
+        } else {
+            throw new Error("File not found");
+        }
+    } catch (e) {
+        console.log("Dual mode disabled (Hello Deepa model not found yet).");
+        document.getElementById('box2').style.opacity = '0.3';
+    }
+
+    setStatus("Ready to Listen");
+    document.getElementById('btn').disabled = false;
+  } catch (e) {
+    setStatus("Error loading models: " + e.message);
+    console.error(e);
+  }
+}
+
+// --- 2. AUDIO PROCESSING LOOP ---
+let scriptNode; // source and audioCtx are already declared above
+
+async function toggleListening() {
+    const btn = document.getElementById('btn');
+    
+    if (isListening) {
+        if (source) source.disconnect();
+        if (scriptNode) scriptNode.disconnect();
+        if (audioCtx) await audioCtx.close();
+        
+        isListening = false;
+        btn.textContent = "Start Listening";
+        setStatus("Stopped");
+        return;
+    }
+
+    try {
+        // 1. Get Microphone Stream
+        console.log("Requesting microphone...");
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            audio: {
+                echoCancellation: false,
+                autoGainControl: false,
+                noiseSuppression: false,
+                channelCount: 1
+            } 
+        });
+        
+        // 2. Create Context
+        // We let the browser pick the native rate (usually 44100 or 48000)
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        console.log(`🎤 Audio Context created at ${audioCtx.sampleRate}Hz`);
+        
+        source = audioCtx.createMediaStreamSource(stream);
+
+        // 3. Use ScriptProcessorNode (Older API, but easier to debug than Worklets)
+        // bufferSize: 4096 gives us ~85ms at 48k, ~250ms at 16k
+        const bufferSize = 4096; 
+        scriptNode = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+
+        // 4. Handle Audio Data
+        let resampleBuffer = []; // To store downsampled data
+        
+        // --- QUEUE SYSTEM START ---
+        // We use a queue to ensure inference runs sequentially.
+        const inferenceQueue = [];
+        let isInferenceRunning = false;
+
+        const processQueue = async () => {
+            if (isInferenceRunning) return;
+            isInferenceRunning = true;
+
+            try {
+                // Process all buffered chunks
+                // If the device is slow, this loop ensures we don't start a new session 
+                // until the previous one finishes.
+                while (inferenceQueue.length > 0) {
+                    const chunk = inferenceQueue.shift();
+                    await runInference(chunk);
+                }
+            } catch (err) {
+                console.error("Queue Error:", err);
+            } finally {
+                isInferenceRunning = false;
+                
+                // If new items arrived while identifying as finished, restart
+                if (inferenceQueue.length > 0) processQueue();
+            }
+        };
+        // --- QUEUE SYSTEM END ---
+
+        scriptNode.onaudioprocess = async (audioProcessingEvent) => {
+            const inputBuffer = audioProcessingEvent.inputBuffer;
+            const inputData = inputBuffer.getChannelData(0);
+
+            // Calculate RMS (Volume Level) for Debugging
+            // ... (omitted for brevity) ....
+
+            // Simple Downsampling with Averaging (Low-pass filter)
+            // Native Rate -> 16000Hz to prevent aliasing
+            const ratio = audioCtx.sampleRate / 16000;
+            
+            for (let i = 0; i < inputData.length; i += ratio) {
+                // Average the samples in the window (better than skipping)
+                let sum = 0;
+                let count = 0;
+                const start = Math.floor(i);
+                const end = Math.min(Math.floor(i + ratio), inputData.length);
+                
+                for (let j = start; j < end; j++) {
+                    sum += inputData[j];
+                    count++;
+                }
+
+                if (count > 0) {
+                    resampleBuffer.push(sum / count);
+                }
+            }
+
+            // 5. Send chunks of 1280 samples (80ms at 16k) to model
+            while (resampleBuffer.length >= 1280) {
+                const chunk = resampleBuffer.slice(0, 1280);
+                resampleBuffer = resampleBuffer.slice(1280);
+                
+                // Add to queue instead of running immediately
+                inferenceQueue.push(new Float32Array(chunk));
+
+                // Lag Protection: If queue grows too large, drop frames to catch up
+                if (inferenceQueue.length > 100) {
+                     console.warn("⚠️ Lag detected! Dropping audio buffer.");
+                     inferenceQueue.length = 0;
+                }
+                
+                // Trigger processing loop
+                processQueue();
+            }
+        };
+
+        source.connect(scriptNode);
+        scriptNode.connect(audioCtx.destination); // Needed for Chrome to fire events, mute if needed via gain
+        
+        // Resume if suspended
+        if (audioCtx.state === 'suspended') {
+            await audioCtx.resume();
+        }
+        
+        isListening = true;
+        btn.textContent = "Stop Listening";
+        setStatus(`Listening... (Native: ${audioCtx.sampleRate}Hz)`);
+
+    } catch (e) {
+        console.error("Audio Start Error:", e);
+        setStatus("Error: " + e.message);
+    }
+}
+
+// --- 3. INFERENCE PIPELINE ---
+// Buffer variables
+const MEL_FRAMES_NEEDED = 76;
+const MEL_BINS = 32;
+let melBuffer = new Float32Array(MEL_FRAMES_NEEDED * MEL_BINS).fill(0);
+
+const EMBED_FRAMES_NEEDED = 24; 
+const EMBED_DIM = 96; 
+let embedBuffer = new Float32Array(EMBED_FRAMES_NEEDED * EMBED_DIM).fill(0);
+
+// NEW: Audio Scaling Factor
+// Browsers provide audio as float32 in range [-1.0, 1.0].
+// openWakeWord models are trained on 16-bit PCM, so they expect values in range [-32768, 32767].
+const SCALE_FACTOR = 32768.0;
+
+async function runInference(audioChunk) {
+  try {
+    // ---------------------------------------------------------
+    // A. Pre-process Audio (Scale float -1..1 to int16 range)
+    // ---------------------------------------------------------
+    // openWakeWord models are trained on 16-bit audio.
+    // The melspectrogram computation expects simple scaling.
+    
+    // Debug: Calculate Max Amplitude
+    let maxAmp = 0;
+    for (let i = 0; i < audioChunk.length; i++) {
+        const val = audioChunk[i];
+        if (Math.abs(val) > maxAmp) maxAmp = Math.abs(val);
+        
+        // Scale to Int16 range [-32768, 32767]
+        // But keep as Float32 because ONNX Runtime expects Float32 input tensor
+        audioChunk[i] = val * 32767.0; 
+    }
+
+    // Diagnostic Log (throttle to ~once per sec)
+    if (Math.random() < 0.05) {
+        console.log(`🎤 Mic Input Level: ${maxAmp.toFixed(4)} (Expected > 0.01 for speech)`);
+    }
+
+    
+    // ---------------------------------------------------------
+    // B. Run Mel Spectrogram
+    // ---------------------------------------------------------
+    const melFeeds = { 
+      [sessions.mel.inputNames[0]]: new ort.Tensor('float32', audioChunk, [1, 1280]) 
+    };
+    const melResults = await sessions.mel.run(melFeeds);
+    const melOutput = melResults[sessions.mel.outputNames[0]]; 
+    
+    // ---------------------------------------------------------
+    // B. Update MEL Buffer
+    // ---------------------------------------------------------
+    // melOutput: [1, 1, Frames, 32]
+    const melData = melOutput.data; 
+    const framesInChunk = melData.length / MEL_BINS; // e.g. 1280/160/etc -> ~8 or ~4 frames
+    
+    // Shift & Push
+    const melShift = framesInChunk * MEL_BINS;
+    melBuffer.set(melBuffer.subarray(melShift), 0);
+    melBuffer.set(melData, melBuffer.length - melShift);
+
+    // ---------------------------------------------------------
+    // C. Run Embedding Model
+    // ---------------------------------------------------------
+    // Input: [1, 76, 32, 1]
+    const embedInput = new ort.Tensor('float32', melBuffer, [1, MEL_FRAMES_NEEDED, MEL_BINS, 1]);
+    
+    const embedFeeds = { 
+        [sessions.embed.inputNames[0]]: embedInput 
+    };
+    const embedResults = await sessions.embed.run(embedFeeds);
+    // embedOutput: [1, 1, 1, 96] or similar 4D tensor
+    const embedOutput = embedResults[sessions.embed.outputNames[0]];
+    
+    // ---------------------------------------------------------
+    // D. Update EMBEDDING Buffer
+    // ---------------------------------------------------------
+    // We need to flatten the 4D output to 1D array of 96 floats
+    const newEmbedVector = embedOutput.data; // Should be length 96
+    
+    if (newEmbedVector.length !== EMBED_DIM) {
+        // Just a safety check
+         // console.warn("Embedding dim mismatch", newEmbedVector.length);
+    }
+
+    // Shift & Push (1 vector of size 96)
+    const embedShift = EMBED_DIM; 
+    embedBuffer.set(embedBuffer.subarray(embedShift), 0);
+    embedBuffer.set(newEmbedVector, embedBuffer.length - embedShift);
+
+    // ---------------------------------------------------------
+    // E. Run Classifiers
+    // ---------------------------------------------------------
+    // Input: [1, 24, 96] - The history of embeddings
+    const clsInput = new ort.Tensor('float32', embedBuffer, [1, EMBED_FRAMES_NEEDED, EMBED_DIM]);
+    
+    // Classifier 1
+    const cls1Feeds = { [sessions.cls1.inputNames[0]]: clsInput };
+    const cls1Out = await sessions.cls1.run(cls1Feeds);
+    const score1 = cls1Out[sessions.cls1.outputNames[0]].data[0];
+
+    // Debug raw score
+    if (Math.random() < 0.05) console.log("🤖 Score1:", score1);
+
+    updateUI(1, score1);
+
+    // Classifier 2
+    if (sessions.cls2) {
+      const cls2Feeds = { [sessions.cls2.inputNames[0]]: clsInput };
+      const cls2Out = await sessions.cls2.run(cls2Feeds); 
+      const score2 = cls2Out[sessions.cls2.outputNames[0]].data[0];
+      updateUI(2, score2);
+    }
+    
+  } catch (e) {
+     console.error("Inference Error:", e);
+     if (e.message.includes("dims") || e.message.includes("rank")) {
+         setStatus("Shape Mismatch (See Console)");
+     }
+  }
+}
+
+function updateUI(id, score) {
+  const box = document.getElementById('box' + id);
+  const label = document.getElementById('score' + id);
+  
+  // Show 1 decimal place
+  const pct = (score * 100).toFixed(1) + "%";
+  label.textContent = pct;
+  
+  // Visual feedback for ANY activity > 1%
+  if (score > 0.01) {
+      label.style.color = `rgba(0,0,0, ${0.3 + score})`; // Darker as score gets higher
+      box.style.borderColor = `rgba(59, 130, 246, ${score})`; // Blue border intensity
+  }
+
+  if (score > THRESHOLD) {
+    box.classList.add('detected');
+    // Remove class after animation
+    setTimeout(() => box.classList.remove('detected'), 1000);
+  }
+}
+
+init();
+
+</script>
+</body>
+</html>

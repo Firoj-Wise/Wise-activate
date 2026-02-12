@@ -5,10 +5,10 @@ import hashlib
 import numpy as np
 import scipy.io.wavfile as wav
 import edge_tts
-from pydub import AudioSegment
+import subprocess
 from pathlib import Path
 # Import negative sentences to generate speech for the "Background" class
-from phrases import PHRASES, VOICES, NEGATIVE_SENTENCES_EN, NEGATIVE_SENTENCES_NE, NEGATIVE_SENTENCES_MAI
+from phrases import PHRASES, VOICES, NEG_MAP
 import gcp_tts
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -17,8 +17,7 @@ BACKGROUND_DIR = BASE_DIR / "data" / "background"
 
 # Ensure directories exist
 for lang in PHRASES.keys():
-    for keyword in ["deepak", "deepa"]:
-        (DATA_DIR / keyword / lang).mkdir(parents=True, exist_ok=True)
+    (DATA_DIR / "deepa" / lang).mkdir(parents=True, exist_ok=True)
 BACKGROUND_DIR.mkdir(parents=True, exist_ok=True)
 
 # Massive GCP Voice List
@@ -30,9 +29,6 @@ GOOGLE_VOICES = {
     ],
     "ne": [
         "hi-IN-Wavenet-A", "hi-IN-Wavenet-B", "hi-IN-Neural2-A", "hi-IN-Neural2-B"
-    ],
-    "mai": [
-        "hi-IN-Wavenet-A", "hi-IN-Neural2-A"
     ]
 }
 
@@ -46,12 +42,14 @@ async def generate_edge_speech(text, voice, output_path, rate="+0%", pitch="+0Hz
         return False
 
 def convert_to_wav(mp3_path, wav_path):
-    """Converts mp3 to wav (16kHz, mono) and deletes mp3."""
+    """Converts mp3 to wav (16kHz, mono) and deletes mp3 using ffmpeg."""
     try:
-        audio = AudioSegment.from_file(mp3_path)
-        audio = audio.set_frame_rate(16000).set_channels(1)
-        audio.export(wav_path, format="wav")
-        os.remove(mp3_path)
+        # Ultra-fast conversion with ffmpeg
+        subprocess.run(
+            ['ffmpeg', '-y', '-i', str(mp3_path), '-ar', '16000', '-ac', '1', str(wav_path)],
+            capture_output=True, check=True
+        )
+        if os.path.exists(mp3_path): os.remove(mp3_path)
         return True
     except:
         if os.path.exists(mp3_path): os.remove(mp3_path)
@@ -138,110 +136,83 @@ def generate_scream_noise(path, duration=1.0, sr=16000):
     data = (data / (np.max(np.abs(data)) + 1e-6) * 20000).astype(np.int16)
     wav.write(path, sr, data)
 
+async def generate_task(semaphore, text, voice, dest_dir, prefix, stats, randomize=True):
+    async with semaphore:
+        if randomize:
+            rate_val = random.randint(-25, 25)
+            pitch_val = random.randint(-5, 5)
+            rate = f"{rate_val:+d}%"
+            pitch = f"{pitch_val:+d}Hz"
+        else:
+            rate, pitch = "+0%", "+0Hz"
+        
+        unique_str = f"{prefix}_{text}_{voice}_{rate}_{pitch}_{random.random()}"
+        file_hash = get_hash(unique_str)
+        wav_path = dest_dir / f"{prefix}_{file_hash}.wav"
+        
+        if not os.path.exists(wav_path):
+            mp3 = str(wav_path).replace(".wav", ".mp3")
+            if await generate_edge_speech(text, voice, mp3, rate, pitch):
+                if convert_to_wav(mp3, wav_path):
+                    stats["count"] += 1
+                    if stats["count"] % 100 == 0:
+                        print(f"Progress: {stats['count']} unique samples generated...")
+
 async def main():
-    print("🚀 Starting HEAVY Hybrid Generation (Edge + GCP) + Negative Speech...")
-    gcp_client = gcp_tts.get_gcp_client()
+    print("Starting ULTIMATE Concurrent Generation (High Diversity)...")
+    semaphore = asyncio.Semaphore(60) # High concurrency for speed
+    stats = {"count": 0}
+    tasks = []
 
-    # 1. Generate Wake Words (Positives)
+    # 1. Wake Words (Positives)
+    # Total targets: ~20k positives (10k EN, 10k NE)
     for lang_key, phrases in PHRASES.items():
-        print(f"--- Generating {lang_key} Wake Words ---")
-        repeat_count = 30 if lang_key in ["ne", "mai"] else 15
-        count = 0
-        
+        count_per_phrase = 20000 // len(phrases)
+        dest_dir = DATA_DIR / "deepa" / lang_key
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        edge_voices = VOICES.get(lang_key, [])
         for phrase in phrases:
-            # Route to correct folder (Deepak vs Deepa)
-            keyword = "deepak" if "deepak" in phrase.lower() or "दीपक" in phrase else "deepa"
-            dest_dir = DATA_DIR / keyword / lang_key
-            dest_dir.mkdir(parents=True, exist_ok=True)
+            for i in range(count_per_phrase):
+                voice = random.choice(edge_voices)
+                tasks.append(generate_task(semaphore, phrase, voice, dest_dir, "edge", stats))
 
-            # A. EDGE TTS
-            edge_voices = VOICES.get(lang_key, [])
-            if edge_voices:
-                for voice in edge_voices:
-                    for rate in ["-20%", "+0%", "+20%"]:
-                        for pitch in ["-2Hz", "+0Hz", "+2Hz"]:
-                            for i in range(max(1, repeat_count // 5)):
-                                unique_str = f"edge_{phrase}_{voice}_{rate}_{pitch}_{i}"
-                                file_hash = get_hash(unique_str)
-                                wav_path = dest_dir / f"edge_{file_hash}.wav"
-                                if not os.path.exists(wav_path):
-                                    mp3 = str(wav_path).replace(".wav", ".mp3")
-                                    if await generate_edge_speech(phrase, voice, mp3, rate, pitch):
-                                        if convert_to_wav(mp3, wav_path):
-                                            count += 1
-                                            if count % 200 == 0: print(f"{lang_key} (Edge): {count} samples...")
-
-            # B. GCP TTS
-            if gcp_client:
-                gcp_voices = GOOGLE_VOICES.get(lang_key, [])
-                for voice in gcp_voices:
-                    for rate in [0.8, 1.0, 1.2]:
-                        for pitch in [-2.0, 0.0, 2.0]:
-                            for i in range(max(1, repeat_count // 5)):
-                                unique_str = f"gcp_{phrase}_{voice}_{rate}_{pitch}_{i}"
-                                file_hash = get_hash(unique_str)
-                                wav_path = dest_dir / f"gcp_{file_hash}.wav"
-                                if not os.path.exists(wav_path):
-                                    mp3 = str(wav_path).replace(".wav", ".mp3")
-                                    if gcp_tts.generate_gcp_audio(phrase, voice, mp3, pitch, rate):
-                                        if convert_to_wav(mp3, wav_path):
-                                            count += 1
-                                            if count % 200 == 0: print(f"{lang_key} (GCP): {count} samples...")
-
-    # 2. Generate Negative Speech (CRITICAL FIX: Teach model what speech is NOT a wakeword)
-    print("--- Generating Negative Speech (Conversational & Tricky phrases) ---")
-    neg_map = {
-        "en": NEGATIVE_SENTENCES_EN, 
-        "ne": NEGATIVE_SENTENCES_NE, 
-        "mai": NEGATIVE_SENTENCES_MAI
-    }
-    
-    # Store these in 'background' because they are negative samples (Class 0)
-    neg_dir = BACKGROUND_DIR / "negative_speech"
+    # 2. Negative Speech (Hard Negatives)
+    # Total targets: ~20k negatives
+    neg_dir = BACKGROUND_DIR / "hard_negatives"
     neg_dir.mkdir(parents=True, exist_ok=True)
-    
-    count_neg = 0
-    for lang, sentences in neg_map.items():
+    for lang, sentences in NEG_MAP.items():
         voices = VOICES.get(lang, [])
-        if not voices: continue
-        
+        count_per_sentence = 20000 // (len(NEG_MAP) * len(sentences))
         for phrase in sentences:
-            for voice in voices:
-                # Generate variations to bulk up the negative speech dataset
-                for i in range(5): 
-                    unique_str = f"neg_{lang}_{phrase}_{voice}_{i}"
-                    file_hash = get_hash(unique_str)
-                    wav_path = neg_dir / f"neg_{file_hash}.wav"
-                    
-                    if not os.path.exists(wav_path):
-                        mp3 = str(wav_path).replace(".wav", ".mp3")
-                        # Vary speed slightly for naturalness
-                        rate = random.choice(["-10%", "+0%", "+10%"])
-                        if await generate_edge_speech(phrase, voice, mp3, rate=rate):
-                            if convert_to_wav(mp3, wav_path):
-                                count_neg += 1
-                                if count_neg % 50 == 0: print(f"Negative Speech: {count_neg} samples...")
-    
-    print(f"Total Negative Speech Generated: {count_neg}")
+            for i in range(count_per_sentence):
+                voice = random.choice(voices)
+                tasks.append(generate_task(semaphore, phrase, voice, neg_dir, f"neg_{lang}", stats))
 
-    # 3. Generate Background Noise
-    print("--- Generating Background Noise (White, Office, Hum, Scream) ---")
+    print(f"Total Speech Tasks Planned: {len(tasks)}")
+    
+    # 3. Background Noise (Parallel with speech)
+    print("--- Queueing Background Noise ---")
     modes = ["white", "brown", "plane", "train", "typing", "office", "hum", "scream"]
-    for i in range(1000):
+    for i in range(5000):
         mode = random.choice(modes)
         path = BACKGROUND_DIR / f"noise_{i}_{mode}.wav"
-        if os.path.exists(path): continue
-        if mode == "white": generate_white_noise(path)
-        elif mode == "brown": generate_brown_noise(path)
-        elif mode == "plane": generate_airplane_rumble(path)
-        elif mode == "train": generate_train_noise(path)
-        elif mode == "typing": generate_typing_noise(path)
-        elif mode == "office": generate_office_noise(path)
-        elif mode == "hum": generate_hum_noise(path)
-        elif mode == "scream": generate_scream_noise(path)
-        if i % 100 == 0: print(f"Background: {i} samples...")
+        async def noise_task(p=path, m=mode):
+            if not os.path.exists(p):
+                if m == "white": generate_white_noise(p)
+                elif m == "brown": generate_brown_noise(p)
+                elif m == "plane": generate_airplane_rumble(p)
+                elif m == "train": generate_train_noise(p)
+                elif m == "typing": generate_typing_noise(p)
+                elif m == "office": generate_office_noise(p)
+                elif m == "hum": generate_hum_noise(p)
+                elif m == "scream": generate_scream_noise(p)
+                stats["count"] += 1
+        tasks.append(noise_task())
 
-    print("\n[SUCCESS] Custom Balanced Dataset Ready.")
+    random.shuffle(tasks) # Mix them up so diversity is interlevead
+    await asyncio.gather(*tasks)
+
+    print(f"\n[SUCCESS] Dataset Ready. Total samples processed: {stats['count']}")
 
 if __name__ == "__main__":
     asyncio.run(main())

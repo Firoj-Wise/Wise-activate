@@ -8,6 +8,8 @@ model_name: "hello_deepa"
 
 target_phrase:
   - "hello deepa"
+  - "hey deepa"
+  - "hey deepu"
 
 # Adversarial negatives — phonetically confusing phrases.
 custom_negative_phrases:
